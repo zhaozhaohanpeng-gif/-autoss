@@ -1533,158 +1533,98 @@ end)
 Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2 })
 
 task.spawn(MainFarmLoop)
--- ====== 💀 可乐终极增强系统 V2 ======
 
--- ===== 参数 =====
-Settings.SafeWaitTime = 21
-Settings.RegisterWaitTime = 5
-Settings.ForceSearchTime = 10
-Settings.RepathDelay = 2
-Settings.AutoDetectBroken = true
-Settings.SmartSwitch = true
+-- ====== 🧠 可乐最终版：纯距离优先 + 快速响应（不改路线） ======
 
--- ===== UI =====
-pcall(function()
-    if Window then
-        Window:SetTitle("可乐 AutoFarm - 终极版")
-    end
-end)
+Settings.RepathDelay = 0.4
 
-pcall(function()
-    Tabs.Main:AddToggle("ColaSmartSwitch", {
-        Title = "智能抢目标",
-        Default = true,
-        Callback = function(v)
-            Settings.SmartSwitch = v
-        end
-    })
-end)
+-- ====== 判断目标是否有效（没被开） ======
+local function IsValidTarget(obj)
+    if not obj then return false end
 
--- ===== 获取最近目标（带过滤） =====
-local function GetBestTarget()
+    local v = obj:FindFirstChild("Values")
+    local b = v and v:FindFirstChild("Broken")
+
+    return not (b and b.Value == true)
+end
+
+-- ====== 获取最近目标（唯一优先级：距离） ======
+local function GetNearestTarget()
     local character = LocalPlayer.Character
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
 
-    local best, bestScore = nil, math.huge
+    local nearest = nil
+    local minDist = math.huge
 
     for _, t in ipairs(SortedTargets or {}) do
-        if t and t.obj and t.part then
-            local values = t.obj:FindFirstChild("Values")
-            local broken = values and values:FindFirstChild("Broken")
-
-            if not broken or not broken.Value then
-                local dist = (t.part.Position - hrp.Position).Magnitude
-                
-                -- 💡 评分机制（越小越优先）
-                local score = dist
-                
-                -- 更近优先
-                if score < bestScore then
-                    bestScore = score
-                    best = t.obj
-                end
+        if t and t.obj and t.part and IsValidTarget(t.obj) then
+            local dist = (t.part.Position - hrp.Position).Magnitude
+            if dist < minDist then
+                minDist = dist
+                nearest = t
             end
         end
     end
 
-    return best
+    return nearest
 end
 
--- ===== Hook 移动（防卡+超时） =====
-local OldMove = MoveToTarget
-MoveToTarget = function(targetPart)
-    local startTime = tick()
+-- ====== 防抖控制 ======
+local lastSwitchTime = 0
+local SWITCH_COOLDOWN = 0.5
 
-    local result = OldMove(targetPart)
-
-    if tick() - startTime > Settings.ForceSearchTime then
-        Log("⚠️ 路径超时，强制切换")
-        return false
-    end
-
-    return result
-end
-
--- ===== 核心智能线程 =====
+-- ====== 核心检测线程 ======
 task.spawn(function()
-    local lastTarget = nil
-    local targetStartTime = 0
-
     while true do
         task.wait(0.3)
 
         if not Settings.Enabled then continue end
 
-        local current = CurrentTargetPart
-        local obj = current and current.Parent
+        local character = LocalPlayer.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        if not hrp then continue end
 
-        if obj ~= lastTarget then
-            lastTarget = obj
-            targetStartTime = tick()
+        local currentPart = CurrentTargetPart
+        local currentObj = currentPart and currentPart.Parent
+
+        -- ===== 1️⃣ 当前目标被开 =====
+        if currentObj and not IsValidTarget(currentObj) then
+            
+            if tick() - lastSwitchTime < SWITCH_COOLDOWN then continue end
+            lastSwitchTime = tick()
+
+            Log("⚠️ 当前目标被开 → 0.4秒切换")
+
+            task.wait(Settings.RepathDelay)
+
+            UpdateTargetsList()
+
+            local nextTarget = GetNearestTarget()
+            if nextTarget and nextTarget.part then
+                MoveToTarget(nextTarget.part)
+            end
         end
 
-        if obj then
-            local values = obj:FindFirstChild("Values")
-            local broken = values and values:FindFirstChild("Broken")
+        -- ===== 2️⃣ 更近目标出现 =====
+        local nearest = GetNearestTarget()
 
-            local name = obj.Name:lower()
-            local waitTime = name:find("safe") and Settings.SafeWaitTime or Settings.RegisterWaitTime
+        if nearest and currentPart then
+            local currentDist = (currentPart.Position - hrp.Position).Magnitude
+            local newDist = (nearest.part.Position - hrp.Position).Magnitude
 
-            -- ===== 被抢检测 =====
-            if Settings.AutoDetectBroken and broken and broken.Value then
-                Log("💀 被抢了，瞬间换目标")
+            -- 防抖 + 防来回切
+            if newDist + 2 < currentDist then
+                
+                if tick() - lastSwitchTime < SWITCH_COOLDOWN then continue end
+                lastSwitchTime = tick()
 
-                task.wait(Settings.RepathDelay)
+                Log("🧠 更近目标 → 切换")
 
-                local nextTarget = GetBestTarget()
-                if nextTarget then
-                    local part = nextTarget:FindFirstChild("MainPart") or nextTarget.PrimaryPart
-                    if part then
-                        MoveToTarget(part)
-                    end
-                end
-            end
-
-            -- ===== 停留控制 =====
-            if tick() - targetStartTime > waitTime then
-                Log("⏰ 到点走人")
-
-                Settings.Enabled = false
-                task.wait(0.2)
-                Settings.Enabled = true
-            end
-
-            -- ===== 防卡死 =====
-            if tick() - targetStartTime > Settings.ForceSearchTime then
-                Log("⚠️ 卡住，强制重置")
-
-                Settings.Enabled = false
-                task.wait(0.2)
-                Settings.Enabled = true
-            end
-
-            -- ===== 智能抢目标（核心） =====
-            if Settings.SmartSwitch then
-                local better = GetBestTarget()
-
-                if better and better ~= obj then
-                    local myDist = (current.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
-                    local newDist = (better.PrimaryPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
-
-                    -- 💡 如果更近，直接换
-                    if newDist + 5 < myDist then
-                        Log("🧠 发现更优目标，切换")
-
-                        local part = better:FindFirstChild("MainPart") or better.PrimaryPart
-                        if part then
-                            MoveToTarget(part)
-                        end
-                    end
-                end
+                MoveToTarget(nearest.part)
             end
         end
     end
 end)
 
-Log("🔥 可乐终极系统已启动")
+Log("✅ 可乐最终版已启动（纯距离优先 + 0.4秒响应）")
