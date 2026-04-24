@@ -1534,29 +1534,32 @@ Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2
 
 task.spawn(MainFarmLoop)
 
--- ====== 🧠 无冲突距离优先系统（只改目标，不控移动） ======
+-- ====== 🧠 可乐最终优化 V2（纯控制目标版） ======
 
-Settings.RepathDelay = 0.4
+local lastUpdate = 0
+local UPDATE_INTERVAL = 0.25
 
-local function IsValidTarget(obj)
+local function IsValid(obj)
     if not obj then return false end
     local v = obj:FindFirstChild("Values")
     local b = v and v:FindFirstChild("Broken")
-    return not (b and b.Value == true)
+    return not (b and b.Value)
 end
 
--- 👉 核心：直接改排序（让原码自己选）
-local function ReSortTargets()
-    local character = LocalPlayer.Character
-    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+local function SmartSort()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
     table.sort(SortedTargets, function(a, b)
         if not a.part or not b.part then return false end
 
-        -- 过滤被开的
-        if not IsValidTarget(a.obj) then return false end
-        if not IsValidTarget(b.obj) then return true end
+        local aValid = IsValid(a.obj)
+        local bValid = IsValid(b.obj)
+
+        if aValid ~= bValid then
+            return aValid -- 有效的排前面
+        end
 
         local da = (a.part.Position - hrp.Position).Magnitude
         local db = (b.part.Position - hrp.Position).Magnitude
@@ -1565,19 +1568,32 @@ local function ReSortTargets()
     end)
 end
 
--- ====== 主线程 ======
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.1)
 
         if not Settings.Enabled then continue end
 
-        -- 强制刷新 + 重排
-        pcall(function()
-            UpdateTargetsList()
-            ReSortTargets()
-        end)
+        -- 控制刷新频率（防卡）
+        if tick() - lastUpdate > UPDATE_INTERVAL then
+            lastUpdate = tick()
+
+            pcall(function()
+                UpdateTargetsList()
+                SmartSort()
+            end)
+        end
+
+        -- 当前目标被开，直接让原码换
+        local cur = CurrentTargetPart
+        local obj = cur and cur.Parent
+
+        if obj and not IsValid(obj) then
+            Log("⚡ 当前目标失效 → 立即刷新")
+
+            CurrentTargetPart = nil
+        end
     end
 end)
 
-Log("✅ 无冲突距离优先系统已启动")
+Log("✅ V2智能目标系统已启动")
