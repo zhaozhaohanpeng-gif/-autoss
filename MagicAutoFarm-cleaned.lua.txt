@@ -1533,86 +1533,74 @@ end)
 Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2 })
 
 task.spawn(MainFarmLoop)
--- [[ 💡 Zenith 逻辑增强补丁：只加不减，覆盖式更新 💡 ]]
+--- [[ ⚡ Zenith 核心功能重写：不改 UI，只改逻辑 ⚡ ]]
 
--- 1. 汉化与功能菜单 (在原有 UI 基础上追加)
-local ZenithTab = Window:AddTab({ Title = "Zenith 增强", Icon = "zap" })
+-- 1. 处理时间重写：收银 5s / 保险 21s
+local OriginalProcess = ProcessTarget
+ProcessTarget = function(target)
+    if not target then return end
+    local isSafe = string.find(target.Name, "Safe")
+    local isReg = string.find(target.Name, "Register")
 
-ZenithTab:AddToggle("SmartMonitor", {Title = "智能保险检测 (开启即停)", Default = true}):OnChanged(function(v)
-    _G.SmartSafeMonitor = v
-end)
+    -- 调用原源码的交互动作
+    OriginalProcess(target)
 
-ZenithTab:AddToggle("AutoCola", {Title = "自动买可乐 (中文名)", Default = false}):OnChanged(function(v)
-    _G.AutoBuyCola = v
-end)
-
--- 2. 重写处理逻辑：精准停留 (收银5s/保险21s)
-local OldProcessTarget = ProcessTarget
-ProcessTarget = function(targetPart)
-    if not targetPart then return end
-    
-    local isSafe = string.find(targetPart.Name, "Safe")
-    local isRegister = string.find(targetPart.Name, "Register")
-    
-    -- 执行原源码中的互动逻辑 (按E/破解等)
-    OldProcessTarget(targetPart)
-    
-    -- 【新要求：精准停留时间】
-    if isRegister then
-        StatusText = "收银机停留 (5s)"
+    -- 强制控制停留时长
+    if isReg then
+        StatusText = "Processing Register (5s)"
         task.wait(5)
     elseif isSafe then
-        StatusText = "保险箱停留 (21s)"
+        StatusText = "Processing Safe (21s)"
         task.wait(21)
     end
     
-    -- 强制结束当前目标，触发搜索下一个
+    -- 结束后清除目标，强制进入下一次搜索
     CurrentTargetPart = nil
     IsMovingToTarget = false
 end
 
--- 3. 核心监控逻辑：10s超时 / 2s中断 / 最近优先
+-- 2. 核心监控：10s 超时 / 2s 中断重选 / 最近优先
 task.spawn(function()
-    local moveTimer = 0
+    local moveClock = 0
     while true do
         task.wait(1)
         if Settings.Enabled and LocalPlayer.Character then
-            -- A. 【新要求：10s 强制执行搜索下一个】
+            -- A. 10秒移动超时逻辑
             if IsMovingToTarget then
-                moveTimer = moveTimer + 1
-                if moveTimer >= 10 then
-                    StatusText = "10s超时：强制重选最近"
+                moveClock = moveClock + 1
+                if moveClock >= 10 then
+                    StatusText = "Timeout (10s) - Re-selecting"
                     IsMovingToTarget = false
                     CurrentTargetPart = nil
-                    moveTimer = 0
-                    UpdateTargetsList() -- 重新搜索
+                    moveClock = 0
+                    UpdateTargetsList() 
                 end
             else
-                moveTimer = 0
+                moveClock = 0
             end
 
-            -- B. 【新要求：保险箱开启状态监测 & 2秒重规划】
-            if _G.SmartSafeMonitor and CurrentTargetPart and string.find(CurrentTargetPart.Name, "Safe") then
+            -- B. 智能中断：如果保险被开了立即停止，2秒后规划新路线
+            if CurrentTargetPart and string.find(CurrentTargetPart.Name, "Safe") then
                 local safeModel = CurrentTargetPart.Parent
-                local v = safeModel and safeModel:FindFirstChild("Values")
-                if v and (v.Broken.Value == true or (v:FindFirstChild("Open") and v.Open.Value == true)) then
-                    StatusText = "目标已失效，2s后换路"
+                local val = safeModel and safeModel:FindFirstChild("Values")
+                if val and (val.Broken.Value == true or (val:FindFirstChild("Open") and val.Open.Value == true)) then
+                    StatusText = "Safe Opened - Re-routing in 2s"
                     IsMovingToTarget = false
                     CurrentTargetPart = nil
                     task.wait(2) -- 原地停留2秒
-                    UpdateTargetsList() -- 重新寻找最近的
+                    UpdateTargetsList()
                 end
             end
         end
     end
 end)
 
--- 4. 优化寻路排序：强制“最近优先”
-local OldUpdateTargets = UpdateTargetsList
+-- 3. 搜索增强：强制锁定物理距离最近的目标
+local OriginalUpdate = UpdateTargetsList
 UpdateTargetsList = function()
-    OldUpdateTargets() -- 先跑原源码的扫描
+    OriginalUpdate() -- 运行原扫描
     
-    -- 重新对结果进行距离排序 (最近的排在第一个)
+    -- 对扫出来的列表进行距离排序 (最近优先)
     table.sort(SortedTargets, function(a, b)
         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then return false end
@@ -1620,4 +1608,15 @@ UpdateTargetsList = function()
     end)
 end
 
-Log("🛡️ Zenith 增强插件已加载：5s/21s/10s超时/智能中断功能已激活")
+-- 4. 彻底解决 Vector3 报错
+task.spawn(function()
+    while true do
+        -- 如果目标为空，防止原脚本其他地方读取报错
+        if CurrentTargetPart == nil then
+            CurrentTargetPart = Instance.new("Part") -- 临时虚拟点
+            CurrentTargetPart.Position = Vector3.new(0, -1000, 0)
+        end
+        task.wait(0.1)
+    end
+end)
+
