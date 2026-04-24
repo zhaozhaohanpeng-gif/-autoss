@@ -1534,63 +1534,118 @@ Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2
 
 task.spawn(MainFarmLoop)
 
--- [[ ⚡ 逻辑修正版：精准时长 + 自动捡完即走 ⚡ ]]
+-- [[ ⚡ Zenith 收银机专项增强补丁：0.8s 中断 + 5s 停留 + 全图最近扫描 ⚡ ]]
+-- 严格遵守：只在末尾添加，不改动上方源码
 
-local SAFE_TIME = 21
-local REGISTER_TIME = 5
-
--- 优化：只检测脚下半径 15 范围内的钱，不扫全图
-local function HasNearbyCash()
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-
-    -- 只在物理结果中找零件，性能比 GetDescendants 强百倍
-    local parts = workspace:FindPartsInRegion3(Region3.new(hrp.Position - Vector3.new(15, 15, 15), hrp.Position + Vector3.new(15, 15, 15)), nil, 100)
-    for _, v in ipairs(parts) do
-        if v.Name:lower():find("cash") then
-            return true
-        end
+-- 1. 【核心逻辑：全图扫描 + 最近优先排序】
+local function ZenithScanAndSort()
+    StatusText = "全图最近扫描中..."
+    UpdateTargetsList() -- 调用原源码全图扫描
+    
+    -- 强制按物理距离重新排序，锁定最近的目标
+    if #SortedTargets > 1 then
+        table.sort(SortedTargets, function(a, b)
+            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if not hrp or not a or not b or not a.Parent or not b.Parent then return false end
+            return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
+        end)
     end
-    return false
 end
 
--- 修正函数名：原脚本的核心是 ProcessTarget
-local OldProcess = ProcessTarget
-ProcessTarget = function(target)
-    if not target then return end
+-- 2. 【核心逻辑：移动函数重写 (实现 0.8s 中断响应)】
+local OriginalMoveToTarget = MoveToTarget 
+MoveToTarget = function(targetPart)
+    RiseToTargetY()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     
-    local obj = target.Parent or target
-    local isSafe = obj.Name:lower():find("safe")
-    local isReg = obj.Name:lower():find("register")
-    local waitTime = isSafe and SAFE_TIME or REGISTER_TIME
+    -- 【安全检查】根除报错：目标不存在直接跳出
+    if not hrp or not targetPart or not targetPart.Parent then 
+        IsMovingToTarget = false
+        return false 
+    end
 
-    -- 1. 先执行原有的互动逻辑（开始按E或破解）
-    OldProcess(target)
-
-    -- 2. 进入监控逻辑
-    local start = tick()
-    local noCashTicks = 0
-
-    while tick() - start < waitTime do
-        task.wait(0.5)
-
-        -- 如果保险箱已经碎了（被开完了）
-        local v = obj:FindFirstChild("Values")
-        if v and v:FindFirstChild("Broken") and v.Broken.Value == true then
-            -- 检查地上是否还有钱
-            if not HasNearbyCash() then
-                break -- 没钱了，直接走
+    IsMovingToTarget = true
+    StatusText = "前往收银机/保险箱"
+    
+    local startPos = hrp.Position
+    local targetFrontPos = GetPositionInFrontOfTarget(targetPart, startPos)
+    if not targetFrontPos then return false end
+    
+    local path = ComputePath(startPos, targetFrontPos)
+    if not path then return false end
+    
+    VisualizePath(path, startPos)
+    
+    for _, waypoint in ipairs(path) do
+        if not Settings.Enabled then break end
+        
+        -- 【关键功能：0.8s 路中中断检测】
+        -- 如果目标在路上被别人开了（Broken/Open 变为 true）
+        if targetPart.Parent and targetPart.Parent:FindFirstChild("Values") then
+            local v = targetPart.Parent.Values
+            local isTaken = (v:FindFirstChild("Broken") and v.Broken.Value == true) or (v:FindFirstChild("Open") and v.Open.Value == true)
+            
+            if isTaken then
+                Log("⚠️ 目标已被开启，立即中断路线")
+                ClearPathVisuals()
+                IsMovingToTarget = false
+                
+                -- [按要求：立即中断 0.8秒后执行全图扫描]
+                task.wait(0.8) 
+                ZenithScanAndSort() 
+                return false -- 中断当前路程，触发下一次循环
             end
         end
 
-        -- 超时强制跳出
-        if tick() - start > waitTime + 2 then break end
+        -- 正常的平移逻辑
+        local targetHRP = waypoint.Position + Vector3.new(0, 2.5, 0)
+        local dist = (targetHRP - hrp.Position).Magnitude
+        if dist > 0.2 then
+            local tween = TweenService:Create(hrp, TweenInfo.new(dist / Settings.MoveSpeed, Enum.EasingStyle.Linear), { CFrame = CFrame.new(targetHRP) * (hrp.CFrame - hrp.CFrame.Position) })
+            tween:Play()
+            tween.Completed:Wait()
+        end
     end
+    
+    ClearPathVisuals()
+    IsMovingToTarget = false
+    return true
+end
 
-    -- 结束后重置状态，让主循环去找下一个
+-- 3. 【核心逻辑：收银机处理时长 (5s)】
+local OriginalProcess = ProcessTarget
+ProcessTarget = function(targetPart)
+    if not targetPart or not targetPart.Parent then return end
+    
+    local isReg = string.find(targetPart.Name, "Register")
+    
+    -- 执行原有的互动（按E/破解）
+    OriginalProcess(targetPart)
+
+    -- 【功能：收银机停留 5s，保险箱仍为 21s】
+    if isReg then
+        StatusText = "收银机处理 (5s)"
+        task.wait(5)
+    else
+        StatusText = "保险箱处理 (21s)"
+        task.wait(21)
+    end
+    
     CurrentTargetPart = nil
     IsMovingToTarget = false
 end
 
-Log("✅ 逻辑修正已生效：收银5s/保险21s/捡完即走")
+-- 4. 【守护逻辑：空闲自动扫描最近目标】
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if Settings.Enabled and not IsMovingToTarget then
+            -- 如果停下来或者没有目标，强制全图扫描一次
+            if StatusText == "Ожидание" or not CurrentTargetPart then
+                ZenithScanAndSort()
+            end
+        end
+    end
+end)
+
+Log("✅ 收银机专项逻辑已加载：0.8s 中断与最近优先功能已就绪")
