@@ -1,0 +1,522 @@
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local PathfindingService = game:GetService("PathfindingService")
+local LocalPlayer = Players.LocalPlayer
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+
+-- 加载 UI 库（根据你代码风格补全的 Fluent 加载）
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+
+local Settings = {
+    Enabled = false,
+    IsDead = false,
+    IgnoredList = {},
+    ProcessedList = {},
+    TempIgnored = {},
+    IgnoreDuration = 60,
+    DebugPrintEnabled = true,
+    TargetY = 4.8,
+    MoveSpeed = 22,
+    SomeFlag = true,
+    WaypointSpacing = 3,
+    SomeOtherParam = 3,
+    PickupDistance = 8,
+    MaxSomething = 999999
+}
+
+local PickupLock = {Lock = {Busy = false}}
+local LastTick = tick()
+local CurrentTargetPart = nil
+local IsMovingToTarget = false
+local SomeFlag2 = false
+local SomeNil = nil
+local StatusText = "等待中" -- 原：袨卸懈写邪薪懈械
+local AvailableSafesCount = 0
+local AvailableRegistersCount = 0
+local Unused1 = 0
+local Unused2 = 0
+local TotalSafesCount = 0
+local TotalRegistersCount = 0
+local AvailableSafes = {}
+local AvailableRegisters = {}
+local TotalAvailableTargets = 0
+local SuggestionText = ""
+local SomeNil2 = nil
+local BrokenStatusMap = {}
+local RetryCount = 0
+local LastShopMainPart = nil
+local IsRising = false
+local SortedTargets = {}
+local HasReachedTargetY = false
+
+local function Log(msg)
+    if Settings.DebugPrintEnabled then
+        print("[自动挂机]", msg)
+    end
+end
+
+local VirtualUser = game:GetService("VirtualUser")
+local AntiAfkEnabled = true
+local AntiAfkConnection = nil
+
+local function EnableAntiAfk()
+    if AntiAfkConnection then return end
+    AntiAfkConnection = LocalPlayer.Idled:Connect(function()
+        if AntiAfkEnabled then
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+            Log("防挂机系统已触发")
+        end
+    end)
+    Log("防挂机系统已启动")
+end
+
+local function DisableAntiAfk()
+    if AntiAfkConnection then
+        AntiAfkConnection:Disconnect()
+        AntiAfkConnection = nil
+    end
+    Log("防挂机系统已停止")
+end
+
+EnableAntiAfk()
+
+local AutoPickupRunning = false
+local AutoPickupConnection = nil
+
+local function StartAutoPickup()
+    if AutoPickupRunning then return end
+    AutoPickupRunning = true
+    if AutoPickupConnection then
+        AutoPickupConnection:Disconnect()
+        AutoPickupConnection = nil
+    end
+    AutoPickupConnection = RunService.RenderStepped:Connect(function()
+        if not AutoPickupRunning or Settings.IsDead then return end
+        local spawnedBreadFolder = Workspace:FindFirstChild("Filter") and Workspace.Filter:FindFirstChild("SpawnedBread")
+        local pickupEvent = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("CZDPZUS")
+        if not spawnedBreadFolder or not pickupEvent then return end
+        local character = LocalPlayer.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        if PickupLock.Lock.Busy then return end
+        local charPos = hrp.Position
+        for _, breadPart in ipairs(spawnedBreadFolder:GetChildren()) do
+            if (charPos - breadPart.Position).Magnitude <= Settings.PickupDistance then
+                if not PickupLock.Lock.Busy then
+                    PickupLock.Lock.Busy = true
+                    pcall(function() pickupEvent:FireServer(breadPart) end)
+                    task.wait(1.1)
+                    PickupLock.Lock.Busy = false
+                    break
+                end
+            end
+        end
+    end)
+end
+
+local function StopAutoPickup()
+    if not AutoPickupRunning then return end
+    AutoPickupRunning = false
+    if AutoPickupConnection then
+        AutoPickupConnection:Disconnect()
+        AutoPickupConnection = nil
+    end
+    if PickupLock and PickupLock.Lock then
+        PickupLock.Lock.Busy = false
+    end
+end
+
+StartAutoPickup()
+Log("自动拾取金钱功能已激活")
+
+-- 创建 UI 界面
+local Window = Fluent:CreateWindow({
+    Title = "Magic Auto Farm [中文汉化版]",
+    SubTitle = "by zhaozhaohanpeng",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true, 
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+local Tabs = {
+    Main = Window:AddTab({ Title = "功能主页", Icon = "home" }),
+    Stats = Window:AddTab({ Title = "数据统计", Icon = "bar-chart" })
+}
+
+Tabs.Main:AddToggle("AutoFarm", {Title = "开启自动挂机", Default = false}):OnChanged(function(Value)
+    Settings.Enabled = Value
+end)
+
+local statusPara = Tabs.Stats:AddParagraph({ Title = "运行状态", Content = "就绪" })
+
+do
+    repeat task.wait() until game:IsLoaded()
+    local clonerefSafe = cloneref or function(...) return ... end
+    local services = setmetatable({}, { __index = function(_, k) return clonerefSafe(game:GetService(k)) end })
+    local localPlayer = services.Players.LocalPlayer
+    local character, humanoid, hrp
+
+    local function updateChar()
+        character = localPlayer.Character
+        if character then
+            hrp = character:FindFirstChild("HumanoidRootPart")
+            humanoid = character:FindFirstChildOfClass("Humanoid")
+        else
+            hrp = nil
+            humanoid = nil
+        end
+    end
+    updateChar()
+
+    local heartbeat = RunService.Heartbeat
+    local renderStepped = RunService.RenderStepped
+    local coreGui = game:GetService("CoreGui")
+    local starterGui = game:GetService("StarterGui")
+
+    local InvisPossible = true
+    if character and not character:FindFirstChild("Torso") then
+        pcall(function() starterGui:SetCore("SendNotification", { Title = "隐身功能不可用", Text = "需要 R6 角色外观", Duration = 5 }) end)
+        InvisPossible = false
+    end
+
+    local warningGui = Instance.new("ScreenGui")
+    warningGui.Name = "InvisWarningGUI"
+    warningGui.Parent = coreGui
+    warningGui.ResetOnSpawn = false
+    warningGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    local InvisWarningLabel = Instance.new("TextLabel", warningGui)
+    InvisWarningLabel.Text = "⚠️ 你现在是可见状态 ⚠️"
+    InvisWarningLabel.Visible = false
+    InvisWarningLabel.Size = UDim2.new(0, 200, 0, 30)
+    InvisWarningLabel.Position = UDim2.new(0.5, -100, 0.85, 0)
+    InvisWarningLabel.BackgroundTransparency = 1
+    InvisWarningLabel.Font = Enum.Font.GothamSemibold
+    InvisWarningLabel.TextSize = 24
+    InvisWarningLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+    InvisWarningLabel.TextStrokeTransparency = 0.5
+    InvisWarningLabel.ZIndex = 10
+
+    local InvisActive = false
+    local InvisAnim = Instance.new("Animation")
+    InvisAnim.AnimationId = "rbxassetid://215384594"
+    local InvisAnimTrack = nil
+
+    local function isGrounded()
+        return humanoid and humanoid:IsDescendantOf(workspace) and humanoid.FloorMaterial ~= Enum.Material.Air
+    end
+
+    local function loadInvisAnim()
+        if InvisAnimTrack then
+            pcall(function() InvisAnimTrack:Stop() end)
+            InvisAnimTrack = nil
+        end
+        if humanoid then
+            local success, track = pcall(function() return humanoid:LoadAnimation(InvisAnim) end)
+            if success then
+                InvisAnimTrack = track
+                InvisAnimTrack.Priority = Enum.AnimationPriority.Action4
+            else
+                InvisAnimTrack = nil
+            end
+        else
+            InvisAnimTrack = nil
+        end
+    end
+
+    local function disableInvis()
+        if not InvisActive then return end
+        InvisActive = false
+        if InvisAnimTrack then
+            pcall(function() InvisAnimTrack:Stop() end)
+        end
+        if humanoid then
+            workspace.CurrentCamera.CameraSubject = humanoid
+        end
+        if character then
+            for _, part in pairs(character:GetDescendants()) do
+                if part:IsA("BasePart") and part.Transparency == 0.5 then
+                    part.Transparency = 0
+                end
+            end
+        end
+        if InvisWarningLabel then
+            InvisWarningLabel.Visible = false
+        end
+    end
+
+    local function enableInvis()
+        if InvisActive or not InvisPossible then return end
+        updateChar()
+        if not character or not humanoid or not hrp then return end
+        if not character:FindFirstChild("Torso") then
+            pcall(function() starterGui:SetCore("SendNotification", { Title = "隐身失败", Text = "需要 R6 角色外观", Duration = 5 }) end)
+            return
+        end
+        InvisActive = true
+        workspace.CurrentCamera.CameraSubject = hrp
+        loadInvisAnim()
+    end
+
+    local function toggleInvis()
+        if InvisActive then disableInvis() else enableInvis() end
+        return InvisActive
+    end
+
+    _G.Invis_Enable = enableInvis
+    _G.Invis_Disable = disableInvis
+    _G.Invis_Toggle = toggleInvis
+    _G.IsInvisEnabled = function() return InvisActive end
+
+    localPlayer.CharacterAdded:Connect(function(newChar)
+        if InvisAnimTrack then pcall(function() InvisAnimTrack:Stop() end) InvisAnimTrack = nil end
+        task.wait()
+        updateChar()
+        if not humanoid then
+            task.wait(0.5)
+            updateChar()
+            if not humanoid then
+                InvisPossible = false
+                if InvisActive then disableInvis() end
+                pcall(function() starterGui:SetCore("SendNotification", { Title = "隐身系统错误", Text = "无法确定角色类型", Duration = 5 }) end)
+                return
+            end
+        end
+        if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
+            InvisPossible = false
+            if InvisActive then disableInvis() end
+            pcall(function() starterGui:SetCore("SendNotification", { Title = "提醒", Text = "检测到非 R6 角色，隐身功能已停用", Duration = 5 }) end)
+            return
+        else
+            InvisPossible = true
+        end
+        if InvisActive then
+            if hrp then workspace.CurrentCamera.CameraSubject = hrp end
+            loadInvisAnim()
+        end
+    end)
+
+    heartbeat:Connect(function(dt)
+        if not InvisActive or not InvisPossible then
+            if not InvisActive and character then
+                for _, part in pairs(character:GetDescendants()) do
+                    if part:IsA("BasePart") and part.Transparency == 0.5 then part.Transparency = 0 end
+                end
+            end
+            if InvisWarningLabel then InvisWarningLabel.Visible = false end
+            return
+        end
+        if not character or not humanoid or not hrp or not humanoid:IsDescendantOf(workspace) or humanoid.Health <= 0 then
+            if InvisWarningLabel then InvisWarningLabel.Visible = false end
+            return
+        end
+        if InvisWarningLabel then InvisWarningLabel.Visible = not isGrounded() end
+
+        local speed = 12
+        if humanoid.MoveDirection.Magnitude > 0 then
+            local move = humanoid.MoveDirection * speed * dt
+            hrp.CFrame = hrp.CFrame + move
+        end
+
+        local originalCF = hrp.CFrame
+        local originalCamOffset = humanoid.CameraOffset
+        local _, cameraYaw = workspace.CurrentCamera.CFrame:ToOrientation()
+
+        hrp.CFrame = CFrame.new(hrp.CFrame.Position) * CFrame.fromOrientation(0, cameraYaw, 0)
+        hrp.CFrame = hrp.CFrame * CFrame.Angles(math.rad(90), 0, 0)
+        humanoid.CameraOffset = Vector3.new(0, 1.44, 0)
+
+        if InvisAnimTrack then
+            pcall(function()
+                if not InvisAnimTrack.IsPlaying then InvisAnimTrack:Play() end
+                InvisAnimTrack:AdjustSpeed(0)
+                InvisAnimTrack.TimePosition = 0.3
+            end)
+        end
+
+        renderStepped:Wait()
+
+        if humanoid and humanoid:IsDescendantOf(workspace) then humanoid.CameraOffset = originalCamOffset end
+        if hrp and hrp:IsDescendantOf(workspace) then hrp.CFrame = originalCF end
+        if InvisAnimTrack then pcall(function() InvisAnimTrack:Stop() end) end
+        
+        if character then
+            for _, part in pairs(character:GetDescendants()) do
+                if part:IsA("BasePart") and part.Transparency ~= 1 then part.Transparency = 0.5 end
+            end
+        end
+    end)
+end
+
+RunService.Stepped:Connect(function()
+    if Settings.Enabled and LocalPlayer.Character then
+        pcall(function()
+            for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
+                if part:IsA("BasePart") then part.CanCollide = false end
+            end
+        end)
+    end
+end)
+
+local function DisableDoorsCollision()
+    local map = Workspace:FindFirstChild("Map")
+    if map then
+        local doors = map:FindFirstChild("Doors")
+        if doors then
+            for _, door in ipairs(doors:GetDescendants()) do
+                pcall(function() if door:IsA("BasePart") then door.CanCollide = false end end)
+            end
+        end
+        Log("门禁碰撞已禁用")
+    end
+end
+DisableDoorsCollision()
+
+local function RiseToTargetY()
+    if HasReachedTargetY then return end
+    local character = LocalPlayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if hrp and humanoid and humanoid.Health > 0 and hrp.Position.Y < 4.7 and not IsRising then
+        Log("高度低于 4.7，正在升至 4.8...")
+        StatusText = "正在上升至 4.8"
+        IsRising = true
+
+        local startPos = hrp.Position
+        local targetY = 4.8
+        local startY = startPos.Y
+        local deltaY = targetY - startY
+        if deltaY <= 0 then IsRising = false StatusText = "等待中" return end
+
+        local steps = math.max(3, math.floor(deltaY * 2))
+        local waypoints = {}
+        for i = 1, steps do
+            local alpha = i / steps
+            local y = startY + deltaY * alpha
+            table.insert(waypoints, Vector3.new(startPos.X, y, startPos.Z))
+        end
+
+        for _, wp in ipairs(waypoints) do
+            if not Settings.Enabled then break end
+            local currentRot = hrp.CFrame - hrp.CFrame.Position
+            local targetCF = CFrame.new(wp) * currentRot
+            local dist = (wp - hrp.Position).Magnitude
+            local duration = math.min(0.5, dist / 10)
+            local tween = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = targetCF })
+            tween:Play()
+            tween.Completed:Wait()
+        end
+
+        hrp.CFrame = CFrame.new(startPos.X, targetY, startPos.Z) * (hrp.CFrame - hrp.CFrame.Position)
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+
+        Log("已到达高度 4.8，静止 3 秒...")
+        task.wait(3)
+        Log("静止结束，继续执行")
+
+        IsRising = false
+        HasReachedTargetY = true
+        StatusText = "等待中"
+    end
+end
+
+local PathVisualsFolder = Instance.new("Folder")
+PathVisualsFolder.Name = "PathVisuals"
+PathVisualsFolder.Parent = Workspace
+
+local function ClearPathVisuals()
+    for _, child in ipairs(PathVisualsFolder:GetChildren()) do pcall(function() child:Destroy() end) end
+end
+
+local function VisualizePath(waypoints, startPos)
+    ClearPathVisuals()
+    if not waypoints or #waypoints == 0 then return end
+    for i, wp in ipairs(waypoints) do
+        local part = Instance.new("Part")
+        part.Name = "Waypoint" .. i
+        part.Size = Vector3.new(2, 2, 2)
+        part.Position = wp.Position
+        part.Anchored = true
+        part.CanCollide = false
+        part.Material = Enum.Material.Neon
+        part.Color = Color3.fromHSV(i / #waypoints, 1, 1)
+        part.Transparency = 0.3
+        part.Parent = PathVisualsFolder
+    end
+end
+
+local function ComputePath(startPos, endPos)
+    local pathParamsList = {
+        { Radius = 1, Height = 4, Spacing = 2 },
+        { Radius = 1.2, Height = 4.5, Spacing = 2.5 },
+        { Radius = 1.5, Height = 5, Spacing = 3 }
+    }
+    for _, params in ipairs(pathParamsList) do
+        local pathParams = {
+            AgentRadius = params.Radius, AgentHeight = params.Height, AgentCanJump = true,
+            AgentCanClimb = true, WaypointSpacing = params.Spacing, CostCalibration = true
+        }
+        local path = PathfindingService:CreatePath(pathParams)
+        local success, _ = pcall(function() path:ComputeAsync(startPos, endPos) end)
+        if success and path.Status == Enum.PathStatus.Success then
+            local rawWaypoints = path:GetWaypoints()
+            if not rawWaypoints or #rawWaypoints < 2 then return rawWaypoints end
+            local refinedWaypoints = {}
+            local spacing = Settings.WaypointSpacing
+            table.insert(refinedWaypoints, rawWaypoints[1])
+            for i = 2, #rawWaypoints do
+                local prev = rawWaypoints[i - 1].Position
+                local curr = rawWaypoints[i].Position
+                local dist = (curr - prev).Magnitude
+                if dist <= spacing then table.insert(refinedWaypoints, rawWaypoints[i])
+                else
+                    local steps = math.ceil(dist / spacing)
+                    for j = 1, steps do
+                        local alpha = j / steps
+                        local pos = prev:Lerp(curr, alpha)
+                        local action = (j == steps and rawWaypoints[i].Action) or Enum.PathWaypointAction.Walk
+                        table.insert(refinedWaypoints, { Position = pos, Action = action })
+                    end
+                end
+            end
+            return refinedWaypoints
+        end
+        task.wait(0.05)
+    end
+    return nil
+end
+
+-- 补全函数逻辑，确保脚本能运行
+local function GetPositionInFrontOfTarget(targetPart, fromPos)
+    if not targetPart then return nil end
+    local success, cf = pcall(function() return targetPart.CFrame end)
+    if not success then return nil end
+    
+    -- 这是一个补全的逻辑，让角色面向目标
+    local offset = (fromPos - cf.Position).Unit * 3
+    return cf.Position + offset
+end
+
+-- 状态栏动态更新循环
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if Settings.Enabled then
+            statusPara:SetDesc("状态: " .. StatusText)
+        else
+            statusPara:SetDesc("脚本已关闭")
+        end
+    end
+end)
+
+Log("脚本已成功汉化并加载")
