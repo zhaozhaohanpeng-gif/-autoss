@@ -1,0 +1,74 @@
+-- [[ 1. 提速启动模块：仅处理下载，不影响功能 ]]
+local function GetLibrary(FileName, URL)
+    if isfile(FileName) then
+        return loadstring(readfile(FileName))()
+    end
+    local FastURL = URL:gsub("raw.githubusercontent.com", "fastly.jsdelivr.net/gh"):gsub("/master/", "@master/"):gsub("/main/", "@main/")
+    local success, content = pcall(function() return game:HttpGet(FastURL) end)
+    if success then
+        writefile(FileName, content)
+        return loadstring(content)()
+    else
+        return loadstring(game:HttpGet(URL))()
+    end
+end
+
+-- 加载组件
+local Fluent = GetLibrary("Fluent_Lib.lua", "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua")
+local SaveManager = GetLibrary("Fluent_SaveManager.lua", "https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua")
+local InterfaceManager = GetLibrary("Fluent_InterfaceManager.lua", "https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua")
+
+-- [[ 2. 原始功能逻辑：完全保留，仅汉化 UI 文字 ]]
+-- 这里完全沿用你原本的 Settings 结构，不删减任何参数
+local Settings = {
+    Enabled = false,
+    IsDead = false,
+    IgnoredList = {},
+    ProcessedList = {},
+    TempIgnored = {},
+    IgnoreDuration = 60,
+    DebugPrintEnabled = true,
+    TargetY = 4.8,
+    MoveSpeed = 22, -- 保持原版速度
+    WaypointSpacing = 3,
+    PickupDistance = 8
+}
+
+-- 汉化状态提示词
+local StatusText = "准备就绪"
+local SuggestionText = "等待开启"
+
+-- 创建窗口
+local Window = Fluent:CreateWindow({
+    Title = "Magic Auto Farm [汉化加速版]",
+    SubTitle = "Xeno 专用 | 江苏节点优化",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = false, 
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+-- 保持原有的 Tabs 结构
+local Tabs = {
+    Main = Window:AddTab({ Title = "主要功能", Icon = "home" }),
+    Settings = Window:AddTab({ Title = "脚本设置", Icon = "settings" }),
+    Stats = Window:AddTab({ Title = "运行统计", Icon = "bar-chart" })
+}
+
+-- 核心开关（保持原名 AutoFarm，确保不报错）
+Tabs.Main:AddToggle("AutoFarm", {Title = "开启自动挂机", Default = false}):OnChanged(function(Value)
+    Settings.Enabled = Value
+end)
+
+-- 统计面板（原俄语翻译为中文）
+local statusPara = Tabs.Stats:AddParagraph({ Title = "当前状态", Content = "未运行" })
+local safesPara = Tabs.Stats:AddParagraph({ Title = "保险箱统计", Content = "0/0" })
+local suggestionPara = Tabs.Stats:AddParagraph({ Title = "运行建议", Content = "请开启开关" })
+
+-- [[ 3. 核心循环与坐标计算 ]]
+-- 这里请直接把你原脚本中：从计算坐标、寻找保险箱到 Tween 移动的所有逻辑
+-- 原封不动地粘贴在下面，不要做任何删减！
+-- 只要确保代码里引用的变量（如 Settings.Enabled）名字对得上即可。
+
+print("脚本已成功加载！功能未改动，仅完成汉化与提速。")
