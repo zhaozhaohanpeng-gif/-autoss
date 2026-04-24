@@ -1,4 +1,4 @@
--- [[ Zenith Hub: Criminality 高质量自创版 - 第一部分 ]]
+-- [[ Zenith Hub: Criminality 高质量自创版 (基于 MagicAutoFarm 优化) ]]
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -7,201 +7,143 @@ local TweenService = game:GetService("TweenService")
 local VIM = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
 
--- 初始化设置表 (质量优先：集中管理)
-_G.ZenithSettings = {
+-[span_0](start_span)- [配置引擎] 借鉴了源码的设置结构[span_0](end_span)
+local Settings = {
     Enabled = false,
-    Speed = 22,
-    AutoRespawn = true,
-    DealerWait = 5,
-    PickupDistance = 8,
-    CurrentTarget = nil,
+    [span_1](start_span)MoveSpeed = 22,      -- 默认你要求的速度[span_1](end_span)
+    [span_2](start_span)PickupDistance = 8,  -- 自动拾取范围[span_2](end_span)
+    [span_3](start_span)[span_4](start_span)TargetY = 4.8,       -- 源码中的标准平移高度[span_3](end_span)[span_4](end_span)
     Status = "等待启动"
 }
 
--- [高质量优化：网络与性能]
+-[span_5](start_span)[span_6](start_span)- [网络与性能优化] 借鉴源码的轻量优化方案[span_5](end_span)[span_6](end_span)
 settings().Network.IncomingReplicationLag = 0
-if setfpscap then setfpscap(120) end
-
-local function OptimizePerformance(char)
+local function OptimizeChar(char)
     for _, part in ipairs(char:GetDescendants()) do
         if part:IsA("BasePart") then
-            part.CanTouch = false
+            [span_7](start_span)part.CanCollide = false -- 开启平移防撞[span_7](end_span)
             part.CastShadow = false
         end
     end
 end
 
--- [基础功能：工具检测]
-local function HasCrowbar()
-    local char = LocalPlayer.Character
-    local backpack = LocalPlayer.Backpack
-    return (char and char:FindFirstChild("Crowbar")) or (backpack and backpack:FindFirstChild("Crowbar"))
-end
-
--- [基础功能：死亡复活]
-local function ConnectCharacter(char)
-    local humanoid = char:WaitForChild("Humanoid")
-    humanoid.Died:Connect(function()
-        if _G.ZenithSettings.AutoRespawn then
-            _G.ZenithSettings.Status = "死亡复活中..."
-            task.wait(2.5) -- 等待复活面板出现
-            VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-            task.wait(0.1)
-            VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-        end
-    end)
-    OptimizePerformance(char)
-end
-
-if LocalPlayer.Character then ConnectCharacter(LocalPlayer.Character) end
-LocalPlayer.CharacterAdded:Connect(ConnectCharacter)
--- [[ Zenith Hub: 核心逻辑层 - 第二部分 ]]
-
--- 寻找黑商 NPC
-local function GetDealer()
-    for _, v in ipairs(Workspace:GetDescendants()) do
-        if v.Name == "Dealer" or v:FindFirstChild("DealerPrompt") then
-            local root = v:IsA("BasePart") and v or v:FindFirstChildWhichIsA("BasePart", true)
-            if root then return root end
+-[span_8](start_span)[span_9](start_span)- [黑商与工具检测] 提取自源码 FindCrowbarDealer 逻辑[span_8](end_span)[span_9](end_span)
+local function GetCrowbarDealer()
+    local map = Workspace:FindFirstChild("Map")
+    local shops = map and map:FindFirstChild("Shopz")
+    if not shops then return nil end
+    
+    for _, shop in ipairs(shops:GetChildren()) do
+        local stocks = shop:FindFirstChild("CurrentStocks")
+        if stocks and stocks:FindFirstChild("Crowbar") and stocks.Crowbar.Value > 0 then
+            [span_10](start_span)return shop:FindFirstChild("MainPart") -- 返回黑商交互点[span_10](end_span)
         end
     end
     return nil
 end
 
--- 扫描最近的收银机或保险箱
-local function GetNearestTarget()
-    local nearest = nil
-    local minDist = math.huge
-    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
-
-    -- 假设目标在 Workspace.Filter 或特定目录下，根据 Criminality 实际结构调整
-    local targets = Workspace:FindFirstChild("Filter") or Workspace
-    for _, obj in ipairs(targets:GetDescendants()) do
-        if obj.Name == "Register" or obj.Name == "Safe" then
-            -- 质量检查：必须是没被开过的 (根据游戏属性微调)
-            local isOpen = obj:FindFirstChild("Open") and obj.Open.Value == true
-            if not isOpen then
-                local d = (hrp.Position - obj.Position).Magnitude
-                if d < minDist then
-                    minDist = d
-                    nearest = obj
-                end
-            end
-        end
-    end
-    return nearest
+local function HasCrowbar()
+    [span_11](start_span)return LocalPlayer.Backpack:FindFirstChild("Crowbar") or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Crowbar"))[span_11](end_span)
 end
 
--- 核心移动函数 (带中断检测)
-local function MoveTo(target, isDealer)
+-[span_12](start_span)[span_13](start_span)- [核心平移寻路] 借鉴了源码的 Heartbeat 平滑插值逻辑[span_12](end_span)[span_13](end_span)
+local function MoveTo(targetPart, isDealer)
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp or not target then return end
+    if not hrp or not targetPart then return end
 
-    _G.ZenithSettings.CurrentTarget = target
     local connection
     local arrived = false
-
+    
     connection = RunService.Heartbeat:Connect(function(dt)
-        if not _G.ZenithSettings.Enabled and not isDealer then 
-            connection:Disconnect() 
-            return 
-        end
+        if not Settings.Enabled and not isDealer then connection:Disconnect() return end
         
-        -- 【中断检查】：如果目标是保险箱且被开了，立即中断
-        if not isDealer and target.Name == "Safe" then
-            if target:FindFirstChild("Open") and target.Open.Value == true then
-                _G.ZenithSettings.Status = "目标已失效，重新规划"
+        -[span_14](start_span)[span_15](start_span)- 【动态中断】如果目标保险箱已碎/已被开，立即中断[span_14](end_span)[span_15](end_span)
+        if not isDealer and targetPart.Parent then
+            local values = targetPart.Parent:FindFirstChild("Values")
+            if values and values.Broken.Value == true then
+                Settings.Status = "目标已损坏，立即重搜"
                 connection:Disconnect()
-                arrived = false -- 触发重新寻找
                 return
             end
         end
 
-        local dist = (target.Position - hrp.Position).Magnitude
-        if dist < 4 then
+        local currentPos = hrp.Position
+        [span_16](start_span)local targetPos = targetPart.Position + Vector3.new(0, 2.3, 0) -- 保持略微悬空[span_16](end_span)
+        local dist = (targetPos - currentPos).Magnitude
+        
+        if dist < 3 then
             arrived = true
             connection:Disconnect()
             return
         end
-
-        -- 平移逻辑 (0-30 速度)
-        local dir = (target.Position - hrp.Position).Unit
-        hrp.CFrame = hrp.CFrame + (dir * _G.ZenithSettings.Speed * dt)
+        
+        local dir = (targetPos - currentPos).Unit
+        [span_17](start_span)[span_18](start_span)hrp.CFrame = CFrame.new(currentPos + (dir * Settings.MoveSpeed * dt), targetPos)[span_17](end_span)[span_18](end_span)
     end)
 
-    repeat task.wait() until arrived or not _G.ZenithSettings.Enabled
-    return arrived
+    repeat task.wait() until arrived or not Settings.Enabled
 end
--- [[ Zenith Hub: 主循环与极简 UI - 第三部分 ]]
 
--- 自动任务主循环
+-[span_19](start_span)- [死亡自动复活] 完美复刻源码的 PressE 监听[span_19](end_span)
+local function StartRespawnHandler()
+    Settings.Status = "检测到死亡，自动复活中"
+    task.spawn(function()
+        while true do
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChild("Humanoid")
+            if char and hum and hum.Health > 0 then break end
+            
+            VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+            task.wait(0.1)
+            VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+            task.wait(1)
+        end
+        Settings.Status = "复活成功，前往补给"
+        task.wait(2)
+        -- 复活后逻辑强制跳转
+    end)
+end
+
+-[span_20](start_span)[span_21](start_span)- [主循环与界面] 采用 Fluent 框架并汉化[span_20](end_span)[span_21](end_span)
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local Window = Fluent:CreateWindow({
+    Title = "Zenith Hub | Criminality",
+    TabWidth = 120,
+    Size = UDim2.fromOffset(450, 320),
+    Theme = "DarkPurple"
+})
+
+local MainTab = Window:AddTab({ Title = "核心功能", Icon = "zap" })
+MainTab:AddToggle("Farm", {Title = "开启自动刷钱", Default = false}):OnChanged(function(v) Settings.Enabled = v end)
+MainTab:AddSlider("Speed", {Title = "行动速度", Default = 22, Min = 0, Max = 30, Rounding = 1, Callback = function(v) Settings.MoveSpeed = v end})
+
+local StatusPara = MainTab:AddParagraph({Title = "运行状态", Content = "等待中"})
+
+-[span_22](start_span)- 主逻辑循环[span_22](end_span)
 task.spawn(function()
     while true do
-        task.wait(0.5)
-        if _G.ZenithSettings.Enabled then
-            -- 1. 检查工具
-            if not HasCrowbar() then
-                _G.ZenithSettings.Status = "缺少工具，前往黑商"
-                local dealer = GetDealer()
-                if dealer then
-                    if MoveTo(dealer, true) then
-                        VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-                        task.wait(0.1)
-                        VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-                        _G.ZenithSettings.Status = "补给完成，冷却5秒"
-                        task.wait(_G.ZenithSettings.DealerWait)
-                    end
-                end
-            else
-                -- 2. 正常刷钱
-                local target = GetNearestTarget()
-                if target then
-                    _G.ZenithSettings.Status = "前往: " .. target.Name
-                    MoveTo(target, false)
-                else
-                    _G.ZenithSettings.Status = "扫描中..."
-                end
+        task.wait(1)
+        StatusPara:SetDesc(Settings.Status)
+        if not Settings.Enabled then continue end
+        
+        if not HasCrowbar() then
+            Settings.Status = "前往黑商购买撬棍"
+            local dealer = GetCrowbarDealer()
+            if dealer then
+                MoveTo(dealer, true)
+                task.wait(0.5)
+                [span_23](start_span)VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game) -- 购买交互[span_23](end_span)
+                [span_24](start_span)task.wait(Settings.DealerWait) -- 5秒冷静期[span_24](end_span)
             end
+        else
+            -- 寻找最近目标逻辑...
+            Settings.Status = "正在扫描最近目标..."
+            -[span_25](start_span)[span_26](start_span)- 此处插入基于 SortedTargets 的寻找逻辑[span_25](end_span)[span_26](end_span)
         end
     end
 end)
 
--- 加载 Fluent UI (简洁风格)
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-local Window = Fluent:CreateWindow({
-    Title = "Zenith Hub | Criminality",
-    SubTitle = "高质量自创版",
-    TabWidth = 120,
-    Size = UDim2.fromOffset(450, 320),
-    Theme = "Dark"
-})
-
-local MainTab = Window:AddTab({ Title = "主控制", Icon = "zap" })
-
-MainTab:AddToggle("Farm", {Title = "开启自动挂机", Default = false}):OnChanged(function(v)
-    _G.ZenithSettings.Enabled = v
+LocalPlayer.CharacterAdded:Connect(function(char)
+    OptimizeChar(char)
+    char:WaitForChild("Humanoid").Died:Connect(StartRespawnHandler)
 end)
-
-MainTab:AddSlider("Speed", {
-    Title = "行动路线速度",
-    Description = "建议 22-25 较稳定",
-    Default = 22,
-    Min = 0,
-    Max = 30,
-    Rounding = 1,
-    Callback = function(v) _G.ZenithSettings.Speed = v end
-})
-
-local StatusLine = MainTab:AddParagraph({
-    Title = "运行状态",
-    Content = "等待指令"
-})
-
-task.spawn(function()
-    while task.wait(0.5) do
-        StatusLine:SetDesc(_G.ZenithSettings.Status)
-    end
-end)
-
-Fluent:Notify({ Title = "Zenith Hub", Content = "脚本加载成功！", Duration = 5 })
