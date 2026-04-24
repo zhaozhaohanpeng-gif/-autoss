@@ -1533,39 +1533,83 @@ end)
 Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2 })
 
 task.spawn(MainFarmLoop)
--- [[ ⚡ Zenith 最终逻辑覆盖补丁 - 只加不减 - 修复报错 ⚡ ]]
+-- [[ 💡 Zenith 终极优化版：精准时间 + 智能中断 + 零报错 💡 ]]
+-- 基于你提供的稳定结构修改，严格执行：收银5s/保险21s/10s超时/最近优先
 
--- 1. 彻底根除 Vector3 报错的核心逻辑
-local SafetyPoint = Instance.new("Part", Workspace)
-SafetyPoint.Name = "ZenithSafetyPoint"
-SafetyPoint.Anchored = true
-SafetyPoint.CanCollide = false
-SafetyPoint.Transparency = 1
-SafetyPoint.Position = Vector3.new(0, -100, 0)
-
--- 守护线程：确保 CurrentTargetPart 永远不会是 nil，防止原脚本绘图报错
-task.spawn(function()
-    while true do
-        if CurrentTargetPart == nil or typeof(CurrentTargetPart) ~= "Instance" then
-            CurrentTargetPart = SafetyPoint
-        end
-        task.wait() 
-    end
-end)
-
--- 2. 重写处理时长：收银 5s / 保险 21s
-local OriginalProcess = ProcessTarget
-ProcessTarget = function(target)
-    if not target or target == SafetyPoint then return end
+-- 1. 重写移动函数 (整合 10s 超时、智能中断、最近优先)
+local OriginalMoveToTarget = MoveToTarget 
+MoveToTarget = function(targetPart)
+    RiseToTargetY()
+    local character = LocalPlayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
     
-    local isSafe = string.find(target.Name, "Safe")
-    local isReg = string.find(target.Name, "Register")
+    -- 【安全检查】防止报错的核心：如果目标没了，立刻返回
+    if not hrp or not targetPart or not targetPart:IsA("BasePart") or not targetPart.Parent then 
+        IsMovingToTarget = false
+        return false 
+    end
 
-    -- 运行原源码中的动作 (按E/破解等)
-    OriginalProcess(target)
+    IsMovingToTarget = true
+    StatusText = "Moving to Target"
+    
+    local startMoveTick = tick() -- 记录开始移动的时间
+    local startPos = hrp.Position
+    local targetFrontPos = GetPositionInFrontOfTarget(targetPart, startPos)
+    if not targetFrontPos then return false end
+    
+    local path = ComputePath(startPos, targetFrontPos)
+    if not path then return false end
+    
+    VisualizePath(path, startPos)
+    
+    for _, waypoint in ipairs(path) do
+        if not Settings.Enabled then break end
+        
+        -- 【10秒超时检测】：如果移动超过10秒还没到，强制中断
+        if tick() - startMoveTick > 10 then
+            Log("⏰ 移动超时 (10s)，强制重选最近目标")
+            break
+        end
 
-    -- 强制控制停留时长
-    if isReg then
+        -- 【智能中断检测】：检测保险箱是否在路上被抢了
+        if targetPart.Parent and targetPart.Parent:FindFirstChild("Values") then
+            local v = targetPart.Parent.Values
+            if (v:FindFirstChild("Broken") and v.Broken.Value == true) or (v:FindFirstChild("Open") and v.Open.Value == true) then
+                Log("⚠️ 目标已被抢先开启，2秒后规划新路线")
+                ClearPathVisuals()
+                IsMovingToTarget = false
+                task.wait(2) -- 原地停留2秒满足你的要求
+                return false 
+            end
+        end
+
+        local targetHRP = waypoint.Position + Vector3.new(0, 2.5, 0)
+        local dist = (targetHRP - hrp.Position).Magnitude
+        if dist > 0.2 then
+            local tween = TweenService:Create(hrp, TweenInfo.new(dist / Settings.MoveSpeed, Enum.EasingStyle.Linear), { CFrame = CFrame.new(targetHRP) * (hrp.CFrame - hrp.CFrame.Position) })
+            tween:Play()
+            tween.Completed:Wait()
+        end
+    end
+    
+    ClearPathVisuals()
+    IsMovingToTarget = false
+    return true
+end
+
+-- 2. 重写处理逻辑 (实现收银 5s / 保险 21s)
+local OriginalProcessTarget = ProcessTarget
+ProcessTarget = function(targetPart)
+    if not targetPart or not targetPart.Parent then return end
+    
+    local isRegister = string.find(targetPart.Name, "Register")
+    local isSafe = string.find(targetPart.Name, "Safe")
+
+    -- 执行源码的互动动作 (按E/破解)
+    OriginalProcessTarget(targetPart)
+
+    -- 【精准停留时间控制】
+    if isRegister then
         StatusText = "Processing Reg (5s)"
         task.wait(5)
     elseif isSafe then
@@ -1573,59 +1617,47 @@ ProcessTarget = function(target)
         task.wait(21)
     end
     
-    -- 结束后重置，触发寻找下一个
-    CurrentTargetPart = SafetyPoint
+    CurrentTargetPart = nil
     IsMovingToTarget = false
 end
 
--- 3. 核心监控：10s 超时 / 2s 中断重规划 / 最近优先
-task.spawn(function()
-    local moveClock = 0
-    while true do
-        task.wait(1)
-        if Settings.Enabled and LocalPlayer.Character then
-            -- A. 10秒强制超时：解决卡墙或发呆
-            if IsMovingToTarget and CurrentTargetPart ~= SafetyPoint then
-                moveClock = moveClock + 1
-                if moveClock >= 10 then
-                    StatusText = "Timeout (10s) - Rerouting"
-                    IsMovingToTarget = false
-                    CurrentTargetPart = SafetyPoint
-                    moveClock = 0
-                    UpdateTargetsList() 
-                end
-            else
-                moveClock = 0
-            end
-
-            -- B. 智能中断：如果跑路途中保险被开了，立刻停下，等2秒找下一个最近的
-            if CurrentTargetPart and CurrentTargetPart ~= SafetyPoint and string.find(CurrentTargetPart.Name, "Safe") then
-                local val = CurrentTargetPart.Parent and CurrentTargetPart.Parent:FindFirstChild("Values")
-                if val and (val.Broken.Value == true or (val:FindFirstChild("Open") and val.Open.Value == true)) then
-                    StatusText = "Safe Interrupted - 2s Wait"
-                    IsMovingToTarget = false
-                    CurrentTargetPart = SafetyPoint
-                    task.wait(2) -- 原地停留2秒
-                    UpdateTargetsList() -- 重新规划最近目标
-                end
-            end
-        end
-    end
-end)
-
--- 4. 强制最近优先排序
-local OriginalUpdate = UpdateTargetsList
+-- 3. 强制排序逻辑 (确保永远去最近的一个)
+local OriginalUpdateTargetsList = UpdateTargetsList
 UpdateTargetsList = function()
-    OriginalUpdate() -- 运行原有的全图扫描
+    OriginalUpdateTargetsList() -- 运行原有的全图扫描
     
-    -- 对扫出来的结果重新按物理距离进行“最近优先”排序
+    -- 对扫出来的结果重新按物理距离进行排序
     if #SortedTargets > 1 then
         table.sort(SortedTargets, function(a, b)
             local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if not hrp then return false end
+            -- 增加安全检查，防止 a 或 b 突然消失导致比较报错
+            if not a or not b or not a.Parent or not b.Parent then return false end
             return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
         end)
     end
 end
 
-Log("🛡️ Zenith 增强补丁已加载：功能已重写，坐标报错已修复")
+-- 4. 守护线程 (处理无目标防卡死)
+task.spawn(function()
+    local idleCounter = 0
+    while true do
+        task.wait(1)
+        if Settings.Enabled and LocalPlayer.Character then
+            if StatusText == "Ожидание" or StatusText == "Waiting" then
+                idleCounter = idleCounter + 1
+                if idleCounter >= 10 then
+                    Log("🔄 附近暂无目标，刷新列表并尝试跳跃重置")
+                    UpdateTargetsList()
+                    local hum = LocalPlayer.Character:FindFirstChild("Humanoid")
+                    if hum then hum.Jump = true end
+                    idleCounter = 0
+                end
+            else
+                idleCounter = 0
+            end
+        end
+    end
+end)
+
+Log("✅ Zenith 最终修正版已加载：收银5s/保险21s/10s超时/智能中断已激活")
