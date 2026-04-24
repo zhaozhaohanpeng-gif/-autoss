@@ -1,225 +1,207 @@
+-- [[ Zenith Hub: Criminality 高质量自创版 - 第一部分 ]]
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
-local PathfindingService = game:GetService("PathfindingService")
+local VIM = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local UserInputService = game:GetService("UserInputService")
-local TeleportService = game:GetService("TeleportService")
-local HttpService = game:GetService("HttpService")
 
-local Settings = {
+-- 初始化设置表 (质量优先：集中管理)
+_G.ZenithSettings = {
     Enabled = false,
-    IsDead = false,
-    IgnoredList = {},
-    ProcessedList = {},
-    TempIgnored = {},
-    IgnoreDuration = 60,
-    DebugPrintEnabled = true,
-    TargetY = 4.8,
-    MoveSpeed = 22,
-    SomeFlag = true,
-    WaypointSpacing = 3,
-    SomeOtherParam = 3,
+    Speed = 22,
+    AutoRespawn = true,
+    DealerWait = 5,
     PickupDistance = 8,
-    MaxSomething = 999999
+    CurrentTarget = nil,
+    Status = "等待启动"
 }
 
-local PickupLock = {Lock = {Busy = false}}
-local LastTick = tick()
-local CurrentTargetPart = nil
-local IsMovingToTarget = false
-local StatusText = "等待启动"
-local AvailableSafesCount = 0
-local AvailableRegistersCount = 0
-local TotalSafesCount = 0
-local TotalRegistersCount = 0
-local AvailableSafes = {}
-local AvailableRegisters = {}
-local TotalAvailableTargets = 0
-local SuggestionText = ""
-local BrokenStatusMap = {}
-local RetryCount = 0
-local IsRising = false
-local HasReachedTargetY = false
+-- [高质量优化：网络与性能]
+settings().Network.IncomingReplicationLag = 0
+if setfpscap then setfpscap(120) end
 
-local function Log(msg)
-    if Settings.DebugPrintEnabled then print("[自动挂机]", msg) end
+local function OptimizePerformance(char)
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanTouch = false
+            part.CastShadow = false
+        end
+    end
 end
 
--- 反挂机逻辑
-local VirtualUser = game:GetService("VirtualUser")
-LocalPlayer.Idled:Connect(function()
-    if Settings.Enabled then
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
-    end
-end)
+-- [基础功能：工具检测]
+local function HasCrowbar()
+    local char = LocalPlayer.Character
+    local backpack = LocalPlayer.Backpack
+    return (char and char:FindFirstChild("Crowbar")) or (backpack and backpack:FindFirstChild("Crowbar"))
+end
 
--- 自动捡钱逻辑
-task.spawn(function()
-    RunService.RenderStepped:Connect(function()
-        if not Settings.Enabled or Settings.IsDead then return end
-        local spawnedBreadFolder = Workspace:FindFirstChild("Filter") and Workspace.Filter:FindFirstChild("SpawnedBread")
-        local pickupEvent = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("CZDPZUS")
-        if not spawnedBreadFolder or not pickupEvent or PickupLock.Lock.Busy then return end
-        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-        for _, breadPart in ipairs(spawnedBreadFolder:GetChildren()) do
-            if (hrp.Position - breadPart.Position).Magnitude <= Settings.PickupDistance then
-                PickupLock.Lock.Busy = true
-                pcall(function() pickupEvent:FireServer(breadPart) end)
-                task.wait(1.1)
-                PickupLock.Lock.Busy = false
-                break
-            end
+-- [基础功能：死亡复活]
+local function ConnectCharacter(char)
+    local humanoid = char:WaitForChild("Humanoid")
+    humanoid.Died:Connect(function()
+        if _G.ZenithSettings.AutoRespawn then
+            _G.ZenithSettings.Status = "死亡复活中..."
+            task.wait(2.5) -- 等待复活面板出现
+            VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+            task.wait(0.1)
+            VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
         end
     end)
-end)
-
--- 穿墙碰撞处理
-RunService.Stepped:Connect(function()
-    if Settings.Enabled and LocalPlayer.Character then
-        pcall(function()
-            for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
-                if part:IsA("BasePart") then part.CanCollide = false end
-            end
-        end)
-    end
-end)
--- [[ 隐身与角色状态逻辑 ]]
-do
-    repeat task.wait() until game:IsLoaded()
-    local character, humanoid, hrp
-    local function updateChar()
-        character = LocalPlayer.Character
-        if character then
-            hrp = character:FindFirstChild("HumanoidRootPart")
-            humanoid = character:FindFirstChildOfClass("Humanoid")
-        end
-    end
-    updateChar()
-
-    local InvisPossible = true
-    local InvisActive = false
-    local InvisAnim = Instance.new("Animation")
-    InvisAnim.AnimationId = "rbxassetid://215384594"
-    local InvisAnimTrack = nil
-
-    local function loadInvisAnim()
-        if InvisAnimTrack then pcall(function() InvisAnimTrack:Stop() end) end
-        if humanoid then
-            local success, track = pcall(function() return humanoid:LoadAnimation(InvisAnim) end)
-            if success then InvisAnimTrack = track; InvisAnimTrack.Priority = Enum.AnimationPriority.Action4 end
-        end
-    end
-
-    -- 隐身核心循环
-    RunService.Heartbeat:Connect(function(dt)
-        if not InvisActive or not character or not hrp or humanoid.Health <= 0 then return end
-        
-        local speed = 12
-        if humanoid.MoveDirection.Magnitude > 0 then
-            hrp.CFrame = hrp.CFrame + (humanoid.MoveDirection * speed * dt)
-        end
-
-        local originalCF = hrp.CFrame
-        local _, cameraYaw = workspace.CurrentCamera.CFrame:ToOrientation()
-        hrp.CFrame = CFrame.new(hrp.Position) * CFrame.fromOrientation(0, cameraYaw, 0) * CFrame.Angles(math.rad(90), 0, 0)
-        
-        RunService.RenderStepped:Wait()
-        hrp.CFrame = originalCF
-        
-        for _, part in pairs(character:GetDescendants()) do
-            if part:IsA("BasePart") and part.Transparency ~= 1 then part.Transparency = 0.5 end
-        end
-    end)
-
-    _G.Invis_Toggle = function()
-        InvisActive = not InvisActive
-        if InvisActive then loadInvisAnim() else 
-            for _, part in pairs(character:GetDescendants()) do
-                if part:IsA("BasePart") then part.Transparency = 0 end
-            end
-        end
-        return InvisActive
-    end
+    OptimizePerformance(char)
 end
 
--- 高度上升逻辑 (防止卡地壳)
-local function RiseToTargetY()
-    if HasReachedTargetY or IsRising then return end
-    local character = LocalPlayer.Character
-    local hrp = character and character:FindFirstChild("HumanoidRootPart")
-    if hrp and hrp.Position.Y < 4.7 then
-        IsRising = true
-        StatusText = "正在校准高度..."
-        local targetCF = CFrame.new(hrp.Position.X, 4.8, hrp.Position.Z) * (hrp.CFrame - hrp.CFrame.Position)
-        local tween = TweenService:Create(hrp, TweenInfo.new(0.5), {CFrame = targetCF})
-        tween:Play()
-        tween.Completed:Wait()
-        task.wait(2)
-        IsRising = false
-        HasReachedTargetY = true
-    end
-end
+if LocalPlayer.Character then ConnectCharacter(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(ConnectCharacter)
+-- [[ Zenith Hub: 核心逻辑层 - 第二部分 ]]
 
--- 禁用地图门的碰撞
-local function DisableDoorsCollision()
-    local map = Workspace:FindFirstChild("Map")
-    if map and map:FindFirstChild("Doors") then
-        for _, door in ipairs(map.Doors:GetDescendants()) do
-            if door:IsA("BasePart") then door.CanCollide = false end
+-- 寻找黑商 NPC
+local function GetDealer()
+    for _, v in ipairs(Workspace:GetDescendants()) do
+        if v.Name == "Dealer" or v:FindFirstChild("DealerPrompt") then
+            local root = v:IsA("BasePart") and v or v:FindFirstChildWhichIsA("BasePart", true)
+            if root then return root end
         end
     end
-end
-DisableDoorsCollision()
--- [[ 寻路与主逻辑 ]]
-local function ComputePath(startPos, endPos)
-    local params = {AgentRadius = 1.5, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = 3}
-    local path = PathfindingService:CreatePath(params)
-    local success, _ = pcall(function() path:ComputeAsync(startPos, endPos) end)
-    if success and path.Status == Enum.PathStatus.Success then return path:GetWaypoints() end
     return nil
 end
 
--- 加载 Fluent UI 界面
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-local Window = Fluent:CreateWindow({
-    Title = "Magic Auto Farm [中文汉化版]",
-    SubTitle = "无损完整逻辑",
-    TabWidth = 160,
-    Size = UDim2.fromOffset(580, 460),
-    Theme = "Dark"
-})
+-- 扫描最近的收银机或保险箱
+local function GetNearestTarget()
+    local nearest = nil
+    local minDist = math.huge
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
 
-local Tabs = {
-    Main = Window:AddTab({ Title = "主控制", Icon = "home" }),
-    Stats = Window:AddTab({ Title = "统计", Icon = "bar-chart" })
-}
+    -- 假设目标在 Workspace.Filter 或特定目录下，根据 Criminality 实际结构调整
+    local targets = Workspace:FindFirstChild("Filter") or Workspace
+    for _, obj in ipairs(targets:GetDescendants()) do
+        if obj.Name == "Register" or obj.Name == "Safe" then
+            -- 质量检查：必须是没被开过的 (根据游戏属性微调)
+            local isOpen = obj:FindFirstChild("Open") and obj.Open.Value == true
+            if not isOpen then
+                local d = (hrp.Position - obj.Position).Magnitude
+                if d < minDist then
+                    minDist = d
+                    nearest = obj
+                end
+            end
+        end
+    end
+    return nearest
+end
 
-Tabs.Main:AddToggle("FarmToggle", {Title = "开启自动挂机", Default = false}):OnChanged(function(Value)
-    Settings.Enabled = Value
-end)
+-- 核心移动函数 (带中断检测)
+local function MoveTo(target, isDealer)
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp or not target then return end
 
-local statusPara = Tabs.Stats:AddParagraph({ Title = "当前状态", Content = "就绪" })
+    _G.ZenithSettings.CurrentTarget = target
+    local connection
+    local arrived = false
 
--- 主循环执行
+    connection = RunService.Heartbeat:Connect(function(dt)
+        if not _G.ZenithSettings.Enabled and not isDealer then 
+            connection:Disconnect() 
+            return 
+        end
+        
+        -- 【中断检查】：如果目标是保险箱且被开了，立即中断
+        if not isDealer and target.Name == "Safe" then
+            if target:FindFirstChild("Open") and target.Open.Value == true then
+                _G.ZenithSettings.Status = "目标已失效，重新规划"
+                connection:Disconnect()
+                arrived = false -- 触发重新寻找
+                return
+            end
+        end
+
+        local dist = (target.Position - hrp.Position).Magnitude
+        if dist < 4 then
+            arrived = true
+            connection:Disconnect()
+            return
+        end
+
+        -- 平移逻辑 (0-30 速度)
+        local dir = (target.Position - hrp.Position).Unit
+        hrp.CFrame = hrp.CFrame + (dir * _G.ZenithSettings.Speed * dt)
+    end)
+
+    repeat task.wait() until arrived or not _G.ZenithSettings.Enabled
+    return arrived
+end
+-- [[ Zenith Hub: 主循环与极简 UI - 第三部分 ]]
+
+-- 自动任务主循环
 task.spawn(function()
     while true do
         task.wait(0.5)
-        if Settings.Enabled then
-            statusPara:SetDesc(StatusText)
-            RiseToTargetY()
-            -- 此处执行目标搜索与移动逻辑
-        else
-            statusPara:SetDesc("已停止")
+        if _G.ZenithSettings.Enabled then
+            -- 1. 检查工具
+            if not HasCrowbar() then
+                _G.ZenithSettings.Status = "缺少工具，前往黑商"
+                local dealer = GetDealer()
+                if dealer then
+                    if MoveTo(dealer, true) then
+                        VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                        task.wait(0.1)
+                        VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                        _G.ZenithSettings.Status = "补给完成，冷却5秒"
+                        task.wait(_G.ZenithSettings.DealerWait)
+                    end
+                end
+            else
+                -- 2. 正常刷钱
+                local target = GetNearestTarget()
+                if target then
+                    _G.ZenithSettings.Status = "前往: " .. target.Name
+                    MoveTo(target, false)
+                else
+                    _G.ZenithSettings.Status = "扫描中..."
+                end
+            end
         end
     end
 end)
 
-print("------------------------------------------")
-print("脚本已全部拼装完成！")
-print("------------------------------------------")
+-- 加载 Fluent UI (简洁风格)
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local Window = Fluent:CreateWindow({
+    Title = "Zenith Hub | Criminality",
+    SubTitle = "高质量自创版",
+    TabWidth = 120,
+    Size = UDim2.fromOffset(450, 320),
+    Theme = "Dark"
+})
+
+local MainTab = Window:AddTab({ Title = "主控制", Icon = "zap" })
+
+MainTab:AddToggle("Farm", {Title = "开启自动挂机", Default = false}):OnChanged(function(v)
+    _G.ZenithSettings.Enabled = v
+end)
+
+MainTab:AddSlider("Speed", {
+    Title = "行动路线速度",
+    Description = "建议 22-25 较稳定",
+    Default = 22,
+    Min = 0,
+    Max = 30,
+    Rounding = 1,
+    Callback = function(v) _G.ZenithSettings.Speed = v end
+})
+
+local StatusLine = MainTab:AddParagraph({
+    Title = "运行状态",
+    Content = "等待指令"
+})
+
+task.spawn(function()
+    while task.wait(0.5) do
+        StatusLine:SetDesc(_G.ZenithSettings.Status)
+    end
+end)
+
+Fluent:Notify({ Title = "Zenith Hub", Content = "脚本加载成功！", Duration = 5 })
