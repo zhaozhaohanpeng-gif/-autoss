@@ -1534,66 +1534,67 @@ Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2
 
 task.spawn(MainFarmLoop)
 
--- ====== 🧠 可乐最终优化 V2（纯控制目标版） ======
+local SAFE_TIME = 21
+local REGISTER_TIME = 5
 
-local lastUpdate = 0
-local UPDATE_INTERVAL = 0.25
-
-local function IsValid(obj)
-    if not obj then return false end
+local function IsBroken(obj)
     local v = obj:FindFirstChild("Values")
     local b = v and v:FindFirstChild("Broken")
-    return not (b and b.Value)
+    return b and b.Value
 end
 
-local function SmartSort()
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    table.sort(SortedTargets, function(a, b)
-        if not a.part or not b.part then return false end
-
-        local aValid = IsValid(a.obj)
-        local bValid = IsValid(b.obj)
-
-        if aValid ~= bValid then
-            return aValid -- 有效的排前面
-        end
-
-        local da = (a.part.Position - hrp.Position).Magnitude
-        local db = (b.part.Position - hrp.Position).Magnitude
-
-        return da < db
-    end)
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.1)
-
-        if not Settings.Enabled then continue end
-
-        -- 控制刷新频率（防卡）
-        if tick() - lastUpdate > UPDATE_INTERVAL then
-            lastUpdate = tick()
-
-            pcall(function()
-                UpdateTargetsList()
-                SmartSort()
-            end)
-        end
-
-        -- 当前目标被开，直接让原码换
-        local cur = CurrentTargetPart
-        local obj = cur and cur.Parent
-
-        if obj and not IsValid(obj) then
-            Log("⚡ 当前目标失效 → 立即刷新")
-
-            CurrentTargetPart = nil
+-- 检测附近有没有钱
+local function HasNearbyCash(pos)
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") and v.Name:lower():find("cash") then
+            if (v.Position - pos).Magnitude < 15 then
+                return true
+            end
         end
     end
-end)
+    return false
+end
 
-Log("✅ V2智能目标系统已启动")
+local OldHackSafe = HackSafe
+
+HackSafe = function(target)
+    if not target then return false end
+
+    local obj = target.Parent or target
+    local name = obj.Name:lower()
+
+    local waitTime = name:find("safe") and SAFE_TIME or REGISTER_TIME
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    local start = tick()
+    local noCashTime = 0
+
+    while tick() - start < waitTime do
+        task.wait(0.3)
+
+        -- 被开直接走
+        if IsBroken(obj) then
+            Log("⚠️ 被开 → 结束")
+            return false
+        end
+
+        -- 检测钱
+        if hrp then
+            if not HasNearbyCash(hrp.Position) then
+                noCashTime = noCashTime + 0.3
+            else
+                noCashTime = 0
+            end
+
+            -- 连续1秒没钱 → 走
+            if noCashTime >= 1 then
+                Log("💰 钱捡完 → 提前走")
+                return true
+            end
+        end
+    end
+
+    return OldHackSafe(target)
+end
