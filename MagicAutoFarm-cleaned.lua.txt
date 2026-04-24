@@ -1643,3 +1643,110 @@ UpdateTargetsList = function()
 end
 
 Log("✅ Zenith 补丁已激活：5s/21s 逻辑 + 10s 超时 + 智能中断 + 中文可乐菜单")
+-- [[ 🛡️ Zenith 终极安全补丁：修复坐标报错 + 逻辑增强 🛡️ ]]
+-- 严格遵守“只加不减”原则，直接贴在脚本最末尾
+
+-- 1. 解决报错的核心：创建一个“影子目标”
+-- 当脚本找不到目标时，让它去读取这个影子坐标，防止报错崩溃
+local SafetyDummy = Instance.new("Part")
+SafetyDummy.Name = "ZenithSafetyPart"
+SafetyDummy.Position = Vector3.new(0, -999, 0) -- 放在地底下，不干扰正常运行
+SafetyDummy.Parent = Workspace
+SafetyDummy.Transparency = 1
+SafetyDummy.CanCollide = false
+
+task.spawn(function()
+    while task.wait(0.1) do
+        -- 拦截：如果原脚本把目标设为 nil，我们立马给它补一个“影子”，防止 Vector3 报错
+        if CurrentTargetPart == nil then
+            CurrentTargetPart = SafetyDummy
+        end
+    end
+end)
+
+-- 2. 菜单增强：中文可乐与智能监测
+local ZenithTab = Window:AddTab({ Title = "Zenith 增强", Icon = "zap" })
+
+ZenithTab:AddToggle("AutoCola", {Title = "自动监测可乐 (Cola)", Default = false}):OnChanged(function(v)
+    _G.AutoColaEnabled = v
+end)
+
+ZenithTab:AddToggle("SmartMonitor", {Title = "智能检测保险状态 (开启即停)", Default = true}):OnChanged(function(v)
+    _G.SmartSafeMonitor = v
+end)
+
+-- 3. 重写逻辑：精准停留 (收银5s/保险21s) + 自动中断
+local OriginalProcess = ProcessTarget
+ProcessTarget = function(target)
+    if not target or target == SafetyDummy then return end
+    
+    local isSafe = string.find(target.Name, "Safe")
+    local isReg = string.find(target.Name, "Register")
+
+    OriginalProcess(target) -- 运行原有的交互逻辑
+
+    if isReg then
+        StatusText = "收银处理中 (5s)"
+        task.wait(5)
+    elseif isSafe then
+        StatusText = "保险处理中 (21s)"
+        task.wait(21)
+    end
+    
+    -- 结束后先重置状态
+    CurrentTargetPart = SafetyDummy
+    IsMovingToTarget = false
+end
+
+-- 4. 核心守护：10s超时 / 2s中断 / 最近优先
+task.spawn(function()
+    local moveClock = 0
+    while true do
+        task.wait(1)
+        if Settings.Enabled and LocalPlayer.Character then
+            -- A. 10秒移动超时强制切换
+            if IsMovingToTarget then
+                moveClock = moveClock + 1
+                if moveClock >= 10 then
+                    StatusText = "移动超时(10s)强制重选"
+                    IsMovingToTarget = false
+                    CurrentTargetPart = SafetyDummy
+                    moveClock = 0
+                    UpdateTargetsList() 
+                end
+            else
+                moveClock = 0
+            end
+
+            -- B. 智能中断逻辑 (核心需求)
+            if _G.SmartSafeMonitor and CurrentTargetPart and CurrentTargetPart ~= SafetyDummy then
+                if string.find(CurrentTargetPart.Name, "Safe") then
+                    local valObj = CurrentTargetPart.Parent and CurrentTargetPart.Parent:FindFirstChild("Values")
+                    -- 检测保险箱是否已碎、已开
+                    if valObj and (valObj.Broken.Value == true or (valObj:FindFirstChild("Open") and valObj.Open.Value == true)) then
+                        StatusText = "目标已开启，2秒后规划新路线"
+                        IsMovingToTarget = false
+                        CurrentTargetPart = SafetyDummy
+                        task.wait(2) -- 原地停留2秒
+                        UpdateTargetsList() -- 重新规划最近路线
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- 5. 排序优化：确保永远选择“最近”
+local OldUpdate = UpdateTargetsList
+UpdateTargetsList = function()
+    OldUpdate()
+    if #SortedTargets > 1 then
+        table.sort(SortedTargets, function(a, b)
+            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if not hrp then return false end
+            return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
+        end)
+    end
+end
+
+Log("🛡️ Zenith 安全补丁加载成功：坐标报错已修复，新逻辑已激活")
