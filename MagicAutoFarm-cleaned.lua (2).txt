@@ -16,12 +16,12 @@ local Settings = {
     IgnoredList = {},
     ProcessedList = {},
     TempIgnored = {},
-    IgnoreDuration = 60,
+    IgnoreDuration = 15,
     DebugPrintEnabled = true,
-    TargetY = 4.8,
-    MoveSpeed = 22,
+    TargetY = 4.5,
+    MoveSpeed = 33,
     SomeFlag = true,
-    WaypointSpacing = 3,
+    WaypointSpacing = 5,
     SomeOtherParam = 3,
     PickupDistance = 8,
     MaxSomething = 999999
@@ -1534,98 +1534,11 @@ Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2
 
 task.spawn(MainFarmLoop)
 
--- [[ ⚡ Zenith 收银机专项增强补丁：0.8s 中断 + 5s 停留 + 全图最近扫描 ⚡ ]]
--- 严格遵守：只在末尾添加，不改动上方源码
-
--- 1. 【核心逻辑：全图扫描 + 最近优先排序】
-local function ZenithScanAndSort()
-    StatusText = "全图最近扫描中..."
-    UpdateTargetsList() -- 调用原源码全图扫描
-    
-    -- 强制按物理距离重新排序，锁定最近的目标
-    if #SortedTargets > 1 then
-        table.sort(SortedTargets, function(a, b)
-            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if not hrp or not a or not b or not a.Parent or not b.Parent then return false end
-            return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
-        end)
-    end
-end
-
--- 2. 【核心逻辑：移动函数重写 (实现 0.8s 中断响应)】
-local OriginalMoveToTarget = MoveToTarget 
-MoveToTarget = function(targetPart)
-    RiseToTargetY()
-    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    
-    -- 【安全检查】根除报错：目标不存在直接跳出
-    if not hrp or not targetPart or not targetPart.Parent then 
-        IsMovingToTarget = false
-        return false 
-    end
-
-    IsMovingToTarget = true
-    StatusText = "前往收银机/保险箱"
-    
-    local startPos = hrp.Position
-    local targetFrontPos = GetPositionInFrontOfTarget(targetPart, startPos)
-    if not targetFrontPos then return false end
-    
-    local path = ComputePath(startPos, targetFrontPos)
-    if not path then return false end
-    
-    VisualizePath(path, startPos)
-    
-    for _, waypoint in ipairs(path) do
-        if not Settings.Enabled then break end
-        
-        -- 【关键功能：0.8s 路中中断检测】
-        -- 如果目标在路上被别人开了（Broken/Open 变为 true）
-        if targetPart.Parent and targetPart.Parent:FindFirstChild("Values") then
-            local v = targetPart.Parent.Values
-            local isTaken = (v:FindFirstChild("Broken") and v.Broken.Value == true) or (v:FindFirstChild("Open") and v.Open.Value == true)
-            
-            if isTaken then
-                Log("⚠️ 目标已被开启，立即中断路线")
-                ClearPathVisuals()
-                IsMovingToTarget = false
-                
-                -- [按要求：立即中断 0.8秒后执行全图扫描]
-                task.wait(0.8) 
-                ZenithScanAndSort() 
-                return false -- 中断当前路程，触发下一次循环
-            end
-        end
-
-        -- 正常的平移逻辑
-        local targetHRP = waypoint.Position + Vector3.new(0, 2.5, 0)
-        local dist = (targetHRP - hrp.Position).Magnitude
-        if dist > 0.2 then
-            local tween = TweenService:Create(hrp, TweenInfo.new(dist / Settings.MoveSpeed, Enum.EasingStyle.Linear), { CFrame = CFrame.new(targetHRP) * (hrp.CFrame - hrp.CFrame.Position) })
-            tween:Play()
-            tween.Completed:Wait()
-        end
-    end
-    
-    ClearPathVisuals()
-    IsMovingToTarget = false
-    return true
-end
-
--- 3. 【核心逻辑：收银机处理时长 (5s)】
-local OriginalProcess = ProcessTarget
-ProcessTarget = function(targetPart)
-    if not targetPart or not targetPart.Parent then return end
-    
-    local isReg = string.find(targetPart.Name, "Register")
-    
-    -- 执行原有的互动（按E/破解）
--- [[ ⚡ Zenith 无冲突稳定补丁：最近优先 + 中断保护（不重写核心）⚡ ]]
+-- [[ ⚡ 极简中断补丁：被抢立即切换最近目标 ⚡ ]]
 
 local scanning = false
-local interruptFlag = false
 
--- ✅ 1. 安全获取最近目标（不污染原表）
+-- ✅ 找最近目标（不动原表）
 local function GetClosestTarget()
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
@@ -1646,14 +1559,13 @@ local function GetClosestTarget()
     return closest
 end
 
--- ✅ 2. 安全扫描（带锁，防止打架）
-local function SafeScan()
+-- ✅ 安全扫描
+local function ScanNearest()
     if scanning then return end
     scanning = true
 
     UpdateTargetsList()
 
-    -- 强制锁定最近目标（只改当前目标，不动原排序）
     local closest = GetClosestTarget()
     if closest then
         CurrentTargetPart = closest
@@ -1662,12 +1574,12 @@ local function SafeScan()
     scanning = false
 end
 
--- ✅ 3. 路中断检测（不改 MoveToTarget）
+-- ✅ 核心：路上中断检测
 task.spawn(function()
     while true do
         task.wait(0.2)
 
-        if Settings.Enabled and CurrentTargetPart and IsMovingToTarget then
+        if Settings.Enabled and IsMovingToTarget and CurrentTargetPart then
             local t = CurrentTargetPart
 
             if t and t.Parent and t.Parent:FindFirstChild("Values") then
@@ -1677,16 +1589,16 @@ task.spawn(function()
                     (v:FindFirstChild("Open") and v.Open.Value == true)
 
                 if isTaken then
-                    Log("⚠️ 目标被抢，占用中断")
+                    Log("⚠️ 目标被抢，切换最近目标")
 
-                    interruptFlag = true
+                    -- 中断当前目标
                     IsMovingToTarget = false
                     CurrentTargetPart = nil
 
-                    -- 延迟扫描（不阻塞）
+                    -- 延迟重新扫描
                     task.spawn(function()
                         task.wait(0.8)
-                        SafeScan()
+                        ScanNearest()
                     end)
                 end
             end
@@ -1694,34 +1606,4 @@ task.spawn(function()
     end
 end)
 
--- ✅ 4. 空闲自动扫描（动态节流）
-task.spawn(function()
-    while true do
-        local delay = CurrentTargetPart and 0.5 or 1.2
-        task.wait(delay)
-
-        if Settings.Enabled and not IsMovingToTarget then
-            if not CurrentTargetPart then
-                SafeScan()
-            end
-        end
-    end
-end)
-
--- ✅ 5. 防卡死保护（防止状态锁死）
-task.spawn(function()
-    while true do
-        task.wait(3)
-
-        if Settings.Enabled then
-            if IsMovingToTarget and not CurrentTargetPart then
-                Log("⚠️ 检测到异常卡死，强制重置状态")
-
-                IsMovingToTarget = false
-                interruptFlag = false
-            end
-        end
-    end
-end)
-
-Log("✅ 无冲突补丁已加载：稳定运行版（不重写核心逻辑）")
+Log("✅ 极简中断补丁已加载")
