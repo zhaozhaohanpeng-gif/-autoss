@@ -1534,24 +1534,39 @@ Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2
 
 task.spawn(MainFarmLoop)
 
--- [[ ⚡ 极简中断补丁：被抢立即切换最近目标 ⚡ ]]
+-- [[ ⚡ 高质量保险箱检测补丁（仅增强，不破坏原逻辑）⚡ ]]
 
 local scanning = false
 
--- ✅ 找最近目标（不动原表）
+-- ✅ 1. 更严格的目标状态检测（防误判）
+local function IsTargetTaken(target)
+    if not target or not target.Parent then return true end
+    
+    local parent = target.Parent
+    local values = parent:FindFirstChild("Values")
+    if not values then return false end
+
+    local broken = values:FindFirstChild("Broken")
+    local open = values:FindFirstChild("Open")
+
+    return (broken and broken.Value == true) or (open and open.Value == true)
+end
+
+-- ✅ 2. 获取最近目标（不污染原表）
 local function GetClosestTarget()
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
 
-    local closest = nil
-    local minDist = math.huge
+    local closest, dist = nil, math.huge
 
     for _, v in ipairs(SortedTargets) do
         if v and v.Parent and v:IsA("BasePart") then
-            local dist = (v.Position - hrp.Position).Magnitude
-            if dist < minDist then
-                minDist = dist
-                closest = v
+            if not IsTargetTaken(v) then -- 过滤已被开的
+                local d = (v.Position - hrp.Position).Magnitude
+                if d < dist then
+                    dist = d
+                    closest = v
+                end
             end
         end
     end
@@ -1559,8 +1574,8 @@ local function GetClosestTarget()
     return closest
 end
 
--- ✅ 安全扫描
-local function ScanNearest()
+-- ✅ 3. 安全扫描（不打架）
+local function SafeScan()
     if scanning then return end
     scanning = true
 
@@ -1574,36 +1589,42 @@ local function ScanNearest()
     scanning = false
 end
 
--- ✅ 核心：路上中断检测
+-- ✅ 4. 路中实时检测（高频 + 稳定）
 task.spawn(function()
     while true do
-        task.wait(0.2)
+        task.wait(0.15) -- 比原来更快响应
 
         if Settings.Enabled and IsMovingToTarget and CurrentTargetPart then
-            local t = CurrentTargetPart
+            if IsTargetTaken(CurrentTargetPart) then
+                Log("⚠️ 检测到保险箱被开启 → 中断")
 
-            if t and t.Parent and t.Parent:FindFirstChild("Values") then
-                local v = t.Parent.Values
-                local isTaken =
-                    (v:FindFirstChild("Broken") and v.Broken.Value == true) or
-                    (v:FindFirstChild("Open") and v.Open.Value == true)
+                IsMovingToTarget = false
+                CurrentTargetPart = nil
 
-                if isTaken then
-                    Log("⚠️ 目标被抢，切换最近目标")
-
-                    -- 中断当前目标
-                    IsMovingToTarget = false
-                    CurrentTargetPart = nil
-
-                    -- 延迟重新扫描
-                    task.spawn(function()
-                        task.wait(0.8)
-                        ScanNearest()
-                    end)
-                end
+                -- 0.8秒后重新找最近
+                task.spawn(function()
+                    task.wait(0.8)
+                    SafeScan()
+                end)
             end
         end
     end
 end)
 
-Log("✅ 极简中断补丁已加载")
+-- ✅ 5. 修改停留时间（不重写函数，用 Hook）
+local oldProcess = ProcessTarget
+ProcessTarget = function(target)
+    if not target then return end
+
+    oldProcess(target) -- 先执行原逻辑
+
+    -- 判断是不是保险箱
+    local isSafe = target.Name and string.find(string.lower(target.Name), "safe")
+
+    if isSafe then
+        StatusText = "保险箱处理中 (10s)"
+        task.wait(10) -- 从60改成10
+    end
+end
+
+Log("✅ 高质量检测补丁已加载（中断 + 最近优先 + 10s停留）")
