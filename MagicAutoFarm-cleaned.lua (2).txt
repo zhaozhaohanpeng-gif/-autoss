@@ -1534,39 +1534,64 @@ Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2
 
 task.spawn(MainFarmLoop)
 
--- [[ ⚡ 高质量保险箱检测补丁（仅增强，不破坏原逻辑）⚡ ]]
+-- [[ ⚡ 高性能控制层：缓存扫描 + 最近优先 + 无冲突接管 ⚡ ]]
 
-local scanning = false
+local CachedTargets = {}
+local cacheReady = false
 
--- ✅ 1. 更严格的目标状态检测（防误判）
-local function IsTargetTaken(target)
-    if not target or not target.Parent then return true end
-    
-    local parent = target.Parent
+-- ✅ 1. 低频全图扫描（解决卡顿）
+task.spawn(function()
+    while true do
+        task.wait(2) -- 2秒才全图扫描一次（大幅减负）
+
+        local newCache = {}
+
+        for _, v in ipairs(workspace:GetDescendants()) do
+            if v:IsA("BasePart") then
+                local name = string.lower(v.Name)
+                if string.find(name, "safe") or string.find(name, "register") then
+                    table.insert(newCache, v)
+                end
+            end
+        end
+
+        CachedTargets = newCache
+        cacheReady = true
+    end
+end)
+
+-- ✅ 2. 判断目标是否可用（高质量检测）
+local function IsValidTarget(v)
+    if not v or not v.Parent then return false end
+
+    local parent = v.Parent
     local values = parent:FindFirstChild("Values")
-    if not values then return false end
+    if not values then return true end
 
     local broken = values:FindFirstChild("Broken")
     local open = values:FindFirstChild("Open")
 
-    return (broken and broken.Value == true) or (open and open.Value == true)
+    if (broken and broken.Value) or (open and open.Value) then
+        return false
+    end
+
+    return true
 end
 
--- ✅ 2. 获取最近目标（不污染原表）
+-- ✅ 3. 最近目标计算（超轻量）
 local function GetClosestTarget()
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
 
-    local closest, dist = nil, math.huge
+    local closest = nil
+    local minDist = math.huge
 
-    for _, v in ipairs(SortedTargets) do
-        if v and v.Parent and v:IsA("BasePart") then
-            if not IsTargetTaken(v) then -- 过滤已被开的
-                local d = (v.Position - hrp.Position).Magnitude
-                if d < dist then
-                    dist = d
-                    closest = v
-                end
+    for _, v in ipairs(CachedTargets) do
+        if IsValidTarget(v) then
+            local dist = (v.Position - hrp.Position).Magnitude
+            if dist < minDist then
+                minDist = dist
+                closest = v
             end
         end
     end
@@ -1574,57 +1599,49 @@ local function GetClosestTarget()
     return closest
 end
 
--- ✅ 3. 安全扫描（不打架）
-local function SafeScan()
-    if scanning then return end
-    scanning = true
-
-    UpdateTargetsList()
-
-    local closest = GetClosestTarget()
-    if closest then
-        CurrentTargetPart = closest
-    end
-
-    scanning = false
-end
-
--- ✅ 4. 路中实时检测（高频 + 稳定）
+-- ✅ 4. 控制层接管目标（核心）
 task.spawn(function()
     while true do
-        task.wait(0.15) -- 比原来更快响应
+        task.wait(0.3)
 
-        if Settings.Enabled and IsMovingToTarget and CurrentTargetPart then
-            if IsTargetTaken(CurrentTargetPart) then
-                Log("⚠️ 检测到保险箱被开启 → 中断")
+        if Settings.Enabled and cacheReady then
+            -- 只有在“空闲”或“没目标”才接管
+            if not IsMovingToTarget or not CurrentTargetPart then
+                local closest = GetClosestTarget()
 
-                IsMovingToTarget = false
-                CurrentTargetPart = nil
-
-                -- 0.8秒后重新找最近
-                task.spawn(function()
-                    task.wait(0.8)
-                    SafeScan()
-                end)
+                if closest then
+                    CurrentTargetPart = closest
+                end
             end
         end
     end
 end)
 
--- ✅ 5. 修改停留时间（不重写函数，用 Hook）
-local oldProcess = ProcessTarget
-ProcessTarget = function(target)
-    if not target then return end
+-- ✅ 5. 路中被抢检测（快速切换）
+task.spawn(function()
+    while true do
+        task.wait(0.15)
 
-    oldProcess(target) -- 先执行原逻辑
+        if Settings.Enabled and CurrentTargetPart and IsMovingToTarget then
+            local t = CurrentTargetPart
+            local parent = t.Parent
 
-    -- 判断是不是保险箱
-    local isSafe = target.Name and string.find(string.lower(target.Name), "safe")
+            if parent and parent:FindFirstChild("Values") then
+                local v = parent.Values
 
-    if isSafe then
-        StatusText = "保险箱处理中 (10s)"
-        task.wait(10) -- 从60改成10
+                local taken =
+                    (v:FindFirstChild("Broken") and v.Broken.Value) or
+                    (v:FindFirstChild("Open") and v.Open.Value)
+
+                if taken then
+                    Log("⚠️ 高性能层：目标被抢 → 切换")
+
+                    CurrentTargetPart = nil
+                    IsMovingToTarget = false
+                end
+            end
+        end
     end
-end
+end)
 
-Log("✅ 高质量检测补丁已加载（中断 + 最近优先 + 10s停留）")
+Log("🚀 高性能控制层已启动（低负载 + 快速响应）")
