@@ -1534,114 +1534,168 @@ Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2
 
 task.spawn(MainFarmLoop)
 
--- [[ ⚡ 高性能控制层：缓存扫描 + 最近优先 + 无冲突接管 ⚡ ]]
+-- [[ 👑 Zenith 终极调优：非阻塞令牌寻路 + 智能补给 + 状态机锁 👑 ]]
 
-local CachedTargets = {}
-local cacheReady = false
+local PathfindingService = game:GetService("PathfindingService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
--- ✅ 1. 低频全图扫描（解决卡顿）
-task.spawn(function()
-    while true do
-        task.wait(2) -- 2秒才全图扫描一次（大幅减负）
+local States = { IDLE = "Idle", FORCED = "Forced", BUYING = "Buying", DEAD = "Dead" }
+local CurrentState = States.IDLE
 
-        local newCache = {}
+local IDLE_LIMIT = 5.5
+local FORCED_LIMIT = 410
+local MERCHANT_NAME = "Dealer"
 
-        for _, v in ipairs(workspace:GetDescendants()) do
-            if v:IsA("BasePart") then
-                local name = string.lower(v.Name)
-                if string.find(name, "safe") or string.find(name, "register") then
-                    table.insert(newCache, v)
-                end
-            end
-        end
+local lastPos = Vector3.new(0,0,0)
+local idleTicks = 0
+local forcedStartTick = 0
+local moveToken = 0 
 
-        CachedTargets = newCache
-        cacheReady = true
-    end
-end)
-
--- ✅ 2. 判断目标是否可用（高质量检测）
-local function IsValidTarget(v)
-    if not v or not v.Parent then return false end
-
-    local parent = v.Parent
-    local values = parent:FindFirstChild("Values")
-    if not values then return true end
-
-    local broken = values:FindFirstChild("Broken")
-    local open = values:FindFirstChild("Open")
-
-    if (broken and broken.Value) or (open and open.Value) then
-        return false
-    end
-
-    return true
+-- 辅助函数
+local function GetHRP()
+    local char = game.Players.LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
 end
 
--- ✅ 3. 最近目标计算（超轻量）
-local function GetClosestTarget()
-    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
+-- ✅ 1. 强化版 SmartMove（带令牌与中断保护）
+local function SmartMove(targetPos)
+    local hrp = GetHRP()
+    local hum = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("Humanoid")
+    if not hrp or not hum then return end
 
-    local closest = nil
+    moveToken = moveToken + 1
+    local myToken = moveToken
+
+    local path = PathfindingService:CreatePath({ AgentRadius = 3, AgentCanJump = true, WaypointSpacing = 4 })
+    
+    local success = pcall(function() path:ComputeAsync(hrp.Position, targetPos) end)
+    
+    if not success or path.Status ~= Enum.PathStatus.Success then
+        hum:MoveTo(targetPos) -- 失败兜底：直线走
+        return
+    end
+
+    local waypoints = path:GetWaypoints()
+    for i = 1, #waypoints do
+        -- 🧠 令牌检查：如果 moveToken 变了，说明有新指令，立即退出旧函数
+        if moveToken ~= myToken or CurrentState == States.DEAD then return end
+        
+        local wp = waypoints[i]
+        hum:MoveTo(wp.Position)
+        if wp.Action == Enum.PathWaypointAction.Jump then hum.Jump = true end
+
+        local stepTick = tick()
+        -- 距离监测循环
+        while GetHRP() and (GetHRP().Position - wp.Position).Magnitude > 3.8 do
+            task.wait(0.1)
+            -- 超时或令牌失效
+            if tick() - stepTick > 3.5 or moveToken ~= myToken then break end
+        end
+    end
+end
+
+-- ✅ 2. 补给任务函数
+local function ExecuteSupplyLogic()
+    CurrentState = States.BUYING
+    StatusText = "🛒 正在前往黑商补给..."
+    
+    -- 寻找最近黑商
+    local merchant = nil
     local minDist = math.huge
-
-    for _, v in ipairs(CachedTargets) do
-        if IsValidTarget(v) then
-            local dist = (v.Position - hrp.Position).Magnitude
-            if dist < minDist then
-                minDist = dist
-                closest = v
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("Model") and string.find(v.Name, MERCHANT_NAME) then
+            local p = v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart")
+            if p then
+                local d = (p.Position - GetHRP().Position).Magnitude
+                if d < minDist then minDist = d; merchant = p end
             end
         end
     end
 
-    return closest
+    if merchant then
+        SmartMove(merchant.Position)
+        task.wait(0.5)
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+        task.wait(0.2)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+        Log("✅ 补给完成，等待 5s")
+        task.wait(5)
+    end
+    CurrentState = States.IDLE
 end
 
--- ✅ 4. 控制层接管目标（核心）
+-- ✅ 3. 核心监控逻辑 (解决阻塞问题)
 task.spawn(function()
+    local lastTarget = nil
+    
     while true do
-        task.wait(0.3)
+        task.wait(0.5)
+        local hrp = GetHRP()
+        
+        -- 基础状态检查
+        if not Settings.Enabled or not hrp or CurrentState == States.DEAD or CurrentState == States.BUYING then
+            if hrp then lastPos = hrp.Position end
+            continue
+        end
 
-        if Settings.Enabled and cacheReady then
-            -- 只有在“空闲”或“没目标”才接管
-            if not IsMovingToTarget or not CurrentTargetPart then
-                local closest = GetClosestTarget()
+        -- A. 不动检测 (增加容差)
+        local dist = (hrp.Position - lastPos).Magnitude
+        if dist < 1.0 then
+            idleTicks = idleTicks + 0.5
+        else
+            idleTicks = 0
+            lastPos = hrp.Position
+        end
 
-                if closest then
-                    CurrentTargetPart = closest
+        -- B. 状态切换逻辑
+        if idleTicks >= IDLE_LIMIT and CurrentState ~= States.FORCED then
+            CurrentState = States.FORCED
+            forcedStartTick = tick()
+            Log("🚨 触发 6分50秒 强制接管模式")
+        end
+
+        -- C. 强制执行逻辑
+        if CurrentState == States.FORCED then
+            local elapsed = tick() - forcedStartTick
+            
+            if elapsed >= FORCED_LIMIT then
+                CurrentState = States.IDLE
+                idleTicks = 0
+                lastTarget = nil
+                Log("🛑 强制模式结束")
+            else
+                StatusText = "🔥 强制执行中: " .. math.floor(FORCED_LIMIT - elapsed) .. "s"
+                local currentTarget = GetClosestTarget and GetClosestTarget()
+                
+                -- 🧠 关键优化：只有当目标变了，才触发新的 SmartMove
+                if currentTarget and currentTarget ~= lastTarget then
+                    lastTarget = currentTarget
+                    task.spawn(function()
+                        SmartMove(currentTarget.Position)
+                    end)
                 end
             end
         end
     end
 end)
 
--- ✅ 5. 路中被抢检测（快速切换）
-task.spawn(function()
-    while true do
-        task.wait(0.15)
+-- ✅ 4. 事件绑定
+local diedConn
+local function BindCharacter(char)
+    local hum = char:WaitForChild("Humanoid", 10)
+    if not hum then return end
+    if diedConn then diedConn:Disconnect() end
 
-        if Settings.Enabled and CurrentTargetPart and IsMovingToTarget then
-            local t = CurrentTargetPart
-            local parent = t.Parent
+    diedConn = hum.Died:Connect(function()
+        if CurrentState == States.DEAD then return end -- 防止重复触发
+        CurrentState = States.DEAD
+        Log("💀 角色死亡")
+        task.wait(4) -- 等待复活
+        ExecuteSupplyLogic()
+    end)
+end
 
-            if parent and parent:FindFirstChild("Values") then
-                local v = parent.Values
+game.Players.LocalPlayer.CharacterAdded:Connect(BindCharacter)
+if game.Players.LocalPlayer.Character then BindCharacter(game.Players.LocalPlayer.Character) end
 
-                local taken =
-                    (v:FindFirstChild("Broken") and v.Broken.Value) or
-                    (v:FindFirstChild("Open") and v.Open.Value)
-
-                if taken then
-                    Log("⚠️ 高性能层：目标被抢 → 切换")
-
-                    CurrentTargetPart = nil
-                    IsMovingToTarget = false
-                end
-            end
-        end
-    end
-end)
-
-Log("🚀 高性能控制层已启动（低负载 + 快速响应）")
+Log("🚀 Zenith 工业级 FSM 已完全同步。")
