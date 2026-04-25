@@ -1620,32 +1620,108 @@ ProcessTarget = function(targetPart)
     local isReg = string.find(targetPart.Name, "Register")
     
     -- 执行原有的互动（按E/破解）
-    OriginalProcess(targetPart)
+-- [[ ⚡ Zenith 无冲突稳定补丁：最近优先 + 中断保护（不重写核心）⚡ ]]
 
-    -- 【功能：收银机停留 5s，保险箱仍为 21s】
-    if isReg then
-        StatusText = "收银机处理 (5s)"
-        task.wait(5)
-    else
-        StatusText = "保险箱处理 (21s)"
-        task.wait(21)
+local scanning = false
+local interruptFlag = false
+
+-- ✅ 1. 安全获取最近目标（不污染原表）
+local function GetClosestTarget()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local closest = nil
+    local minDist = math.huge
+
+    for _, v in ipairs(SortedTargets) do
+        if v and v.Parent and v:IsA("BasePart") then
+            local dist = (v.Position - hrp.Position).Magnitude
+            if dist < minDist then
+                minDist = dist
+                closest = v
+            end
+        end
     end
-    
-    CurrentTargetPart = nil
-    IsMovingToTarget = false
+
+    return closest
 end
 
--- 4. 【守护逻辑：空闲自动扫描最近目标】
+-- ✅ 2. 安全扫描（带锁，防止打架）
+local function SafeScan()
+    if scanning then return end
+    scanning = true
+
+    UpdateTargetsList()
+
+    -- 强制锁定最近目标（只改当前目标，不动原排序）
+    local closest = GetClosestTarget()
+    if closest then
+        CurrentTargetPart = closest
+    end
+
+    scanning = false
+end
+
+-- ✅ 3. 路中断检测（不改 MoveToTarget）
 task.spawn(function()
     while true do
-        task.wait(1)
-        if Settings.Enabled and not IsMovingToTarget then
-            -- 如果停下来或者没有目标，强制全图扫描一次
-            if StatusText == "Ожидание" or not CurrentTargetPart then
-                ZenithScanAndSort()
+        task.wait(0.2)
+
+        if Settings.Enabled and CurrentTargetPart and IsMovingToTarget then
+            local t = CurrentTargetPart
+
+            if t and t.Parent and t.Parent:FindFirstChild("Values") then
+                local v = t.Parent.Values
+                local isTaken =
+                    (v:FindFirstChild("Broken") and v.Broken.Value == true) or
+                    (v:FindFirstChild("Open") and v.Open.Value == true)
+
+                if isTaken then
+                    Log("⚠️ 目标被抢，占用中断")
+
+                    interruptFlag = true
+                    IsMovingToTarget = false
+                    CurrentTargetPart = nil
+
+                    -- 延迟扫描（不阻塞）
+                    task.spawn(function()
+                        task.wait(0.8)
+                        SafeScan()
+                    end)
+                end
             end
         end
     end
 end)
 
-Log("✅ 收银机专项逻辑已加载：0.8s 中断与最近优先功能已就绪")
+-- ✅ 4. 空闲自动扫描（动态节流）
+task.spawn(function()
+    while true do
+        local delay = CurrentTargetPart and 0.5 or 1.2
+        task.wait(delay)
+
+        if Settings.Enabled and not IsMovingToTarget then
+            if not CurrentTargetPart then
+                SafeScan()
+            end
+        end
+    end
+end)
+
+-- ✅ 5. 防卡死保护（防止状态锁死）
+task.spawn(function()
+    while true do
+        task.wait(3)
+
+        if Settings.Enabled then
+            if IsMovingToTarget and not CurrentTargetPart then
+                Log("⚠️ 检测到异常卡死，强制重置状态")
+
+                IsMovingToTarget = false
+                interruptFlag = false
+            end
+        end
+    end
+end)
+
+Log("✅ 无冲突补丁已加载：稳定运行版（不重写核心逻辑）")
