@@ -1,1 +1,133 @@
+-- [[ 👑 Zenith Actions: 稳定执行 + 成功检测版 ]]
 
+local Actions = {}
+
+local VIM = game:GetService("VirtualInputManager")
+
+-- =========================
+-- 🧪 业务状态检测
+-- =========================
+local function CheckTargetState(target)
+    local val = target:FindFirstChild("Values")
+    if not val then return false end
+
+    local open = val:FindFirstChild("Open")
+    if open and open.Value then
+        return true
+    end
+
+    return false
+end
+
+-- =========================
+-- 💀 Respawn（单次触发 + 轮询确认）
+-- =========================
+function Actions.Respawn(token)
+    VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+    task.wait(0.1)
+    VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+
+    local start = tick()
+    while tick() - start < 5 do
+        if token and ZenithAI.Token ~= token then return false end
+
+        local char = LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            return true
+        end
+
+        task.wait(0.2)
+    end
+
+    return false
+end
+
+-- =========================
+-- 🛠️ Equip（确认成功）
+-- =========================
+function Actions.Equip(toolName, token)
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChild("Humanoid")
+    if not char or not hum then return false end
+
+    if char:FindFirstChild(toolName) then return true end
+
+    local tool = LocalPlayer.Backpack:FindFirstChild(toolName)
+    if not tool then return false end
+
+    hum:EquipTool(tool)
+
+    local start = tick()
+    while tick() - start < 0.8 do
+        if token and ZenithAI.Token ~= token then return false end
+        if char:FindFirstChild(toolName) then return true end
+        task.wait(0.05)
+    end
+
+    return false
+end
+
+-- =========================
+-- 🖱️ Interact（带成功检测）
+-- =========================
+function Actions.Interact(target, token, clickTimes)
+    if not target or not target.Parent then return false end
+    clickTimes = clickTimes or 1
+
+    -- ClickDetector
+    local cd = target:FindFirstChildWhichIsA("ClickDetector", true)
+    if cd then
+        for i = 1, clickTimes do
+            if token and ZenithAI.Token ~= token then return false end
+            fireclickdetector(cd)
+            task.wait(0.1)
+        end
+
+        -- 简单确认
+        local start = tick()
+        while tick() - start < 1 do
+            if token and ZenithAI.Token ~= token then return false end
+            if CheckTargetState(target) then return true end
+            task.wait(0.05)
+        end
+
+        return false
+    end
+
+    -- ProximityPrompt
+    local prompt = target:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        fireproximityprompt(prompt)
+
+        local start = tick()
+        while tick() - start < 1.2 do
+            if token and ZenithAI.Token ~= token then return false end
+            if CheckTargetState(target) then return true end
+            task.wait(0.05)
+        end
+
+        return false
+    end
+
+    return false
+end
+
+-- =========================
+-- 👊 Punch（带冷却）
+-- =========================
+local lastPunch = 0
+
+function Actions.Punch(token)
+    if token and ZenithAI.Token ~= token then return false end
+
+    if tick() - lastPunch < 0.35 then return false end
+    lastPunch = tick()
+
+    VIM:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+    task.wait(0.05)
+    VIM:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+
+    return true
+end
+
+return Actions
