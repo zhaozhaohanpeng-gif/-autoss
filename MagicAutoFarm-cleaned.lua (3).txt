@@ -1,23 +1,36 @@
 _G.Zenith = {
-    lastPos = nil,
-    idleTime = 0,
-    recovering = false
+    lastActionTime = tick(),
+    recovering = false,
+    wrapped = false
 }
 
 local Z = _G.Zenith
 
-local Players = game:GetService("Players")
-local LP = Players.LocalPlayer
-
-local function GetHRP()
-    local char = LP.Character
-    return char and char:FindFirstChild("HumanoidRootPart")
+local function MarkAction()
+    Z.lastActionTime = tick()
 end
 
-local function GetHumanoid()
-    local char = LP.Character
-    return char and char:FindFirstChild("Humanoid")
-end
+-- 🔥 延迟包装（等源码加载完再接管）
+task.spawn(function()
+    repeat task.wait() until GetClosestTarget and MoveToTarget
+
+    if Z.wrapped then return end
+    Z.wrapped = true
+
+    local old_GetClosestTarget = GetClosestTarget
+    GetClosestTarget = function(...)
+        MarkAction()
+        return old_GetClosestTarget(...)
+    end
+
+    local old_MoveToTarget = MoveToTarget
+    MoveToTarget = function(...)
+        MarkAction()
+        return old_MoveToTarget(...)
+    end
+
+    warn("✅ Zenith：函数接管完成")
+end)
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -1553,63 +1566,16 @@ end)
 Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2 })
 
 task.spawn(MainFarmLoop)
-_G.Zenith = {
-    lastPos = nil,
-    idleTime = 0,
-    recovering = false
-}
-
-local Z = _G.Zenith
-local Players = game:GetService("Players")
-local LP = Players.LocalPlayer
-
-local function GetHRP()
-    local c = LP.Character
-    return c and c:FindFirstChild("HumanoidRootPart")
-end
-
-local function GetHumanoid()
-    local c = LP.Character
-    return c and c:FindFirstChild("Humanoid")
-end
-
 task.spawn(function()
     while true do
-        task.wait(0.5)
+        task.wait(1)
 
-        local hrp = GetHRP()
-        local hum = GetHumanoid()
-        if not hrp or not hum then continue end
-
-        if not Z.lastPos then
-            Z.lastPos = hrp.Position
-            continue
-        end
-
-        local dist = (hrp.Position - Z.lastPos).Magnitude
-
-        if dist < 1 then
-            Z.idleTime += 0.5
-        else
-            Z.idleTime = 0
-            Z.lastPos = hrp.Position
-        end
-
-        if Z.idleTime > 6 and not Z.recovering then
+        if (tick() - Z.lastActionTime > 8) and not Z.recovering then
             Z.recovering = true
-
-            hum.Jump = true
-            task.wait(0.2)
-
-            hum:MoveTo(hrp.Position + Vector3.new(
-                math.random(-12,12),
-                0,
-                math.random(-12,12)
-            ))
-
-            task.wait(1)
+            warn("🧠 AI卡死 → 强制重新驱动")
 
             local newTarget = nil
+
             pcall(function()
                 if GetClosestTarget then
                     newTarget = GetClosestTarget()
@@ -1617,18 +1583,16 @@ task.spawn(function()
             end)
 
             if newTarget and MoveToTarget then
+                warn("🎯 重新激活目标")
+
                 pcall(function()
                     MoveToTarget(newTarget)
                 end)
             else
-                hum:MoveTo(hrp.Position + Vector3.new(
-                    math.random(-25,25),
-                    0,
-                    math.random(-25,25)
-                ))
+                warn("⚠️ 目标系统暂无响应")
             end
 
-            Z.idleTime = 0
+            Z.lastActionTime = tick()
             Z.recovering = false
         end
     end
