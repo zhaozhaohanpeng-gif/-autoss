@@ -1657,3 +1657,58 @@ task.spawn(function()
         end
     end
 end)
+local currentTarget = nil
+local finishTime = 0
+local finishDelay = 5
+
+local function IsTargetFinished(target)
+    if not target then return true end
+
+    local hum = target:FindFirstChild("Humanoid")
+    if not hum then return true end
+
+    if hum.Health <= 0 then
+        return true
+    end
+
+    return false
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+
+        if not _G.ColaEnabled then continue end
+
+        -- 🔥 当前目标结束
+        if IsTargetFinished(currentTarget) then
+
+            if finishTime == 0 then
+                finishTime = tick()
+                currentTarget = nil
+            end
+
+            if tick() - finishTime >= finishDelay then
+                local newTarget = nil
+
+                pcall(function()
+                    newTarget = GetClosestTarget()
+                end)
+
+                if newTarget then
+                    currentTarget = newTarget
+                    warn("🥤 可乐：切换新目标")
+                end
+
+                finishTime = 0
+            end
+
+        else
+            finishTime = 0
+
+            if currentTarget and MoveToTarget then
+                MoveToTarget(currentTarget)
+            end
+        end
+    end
+end)
