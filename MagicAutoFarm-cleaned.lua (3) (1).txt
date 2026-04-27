@@ -1,3 +1,84 @@
+_G.SafeCore = {
+    lastPos = nil,
+    stuckTime = 0,
+    lastClean = tick()
+}
+
+local S = _G.SafeCore
+
+function SafeClean(Settings)
+    if not Settings or not Settings.TempIgnored then return end
+
+    for k, v in pairs(Settings.TempIgnored) do
+        if type(v) == "number" and v < tick() then
+            Settings.TempIgnored[k] = nil
+        end
+    end
+end
+_G.StableLite = {
+    lastPos = nil,
+    stuck = 0,
+    lastClean = tick()
+}
+
+local S = _G.StableLite
+
+function CleanTempIgnored(Settings)
+    if not Settings or not Settings.TempIgnored then return end
+
+    for k, v in pairs(Settings.TempIgnored) do
+        if type(v) == "number" and v < tick() then
+            Settings.TempIgnored[k] = nil
+        end
+    end
+end
+_G.Stable2 = {
+    lastPos = nil,
+    stuckTime = 0,
+    lastClean = tick(),
+    lastAction = tick()
+}
+
+local S2 = _G.Stable2
+
+function StableCleanup(Settings)
+    if not Settings or not Settings.TempIgnored then return end
+
+    for k, v in pairs(Settings.TempIgnored) do
+        if type(v) == "number" and v < tick() then
+            Settings.TempIgnored[k] = nil
+        end
+    end
+end
+
+function UpdateAction()
+    S2.lastAction = tick()
+end
+_G.StableCore = {
+    lastCleanup = tick(),
+    lastMoveCheck = tick(),
+}
+
+local SC = _G.StableCore
+
+function StableCleanup()
+    -- 🧹 清理过期TempIgnored
+    if Settings and Settings.TempIgnored then
+        for k, v in pairs(Settings.TempIgnored) do
+            if type(v) == "number" and v < tick() then
+                Settings.TempIgnored[k] = nil
+            end
+        end
+    end
+end
+
+function CheckLoopHealth()
+    -- ⏱ 定期清理（防止越跑越卡）
+    if tick() - SC.lastCleanup > 30 then
+        StableCleanup()
+        SC.lastCleanup = tick()
+    end
+end
 local ScreenGui = Instance.new("ScreenGui")
 local Button = Instance.new("TextButton")
 
@@ -1712,3 +1793,98 @@ task.spawn(function()
         end
     end
 end)
+function AntiFreezeCheck(hrp)
+    if not hrp then return end
+
+    local last = SC.lastPos or hrp.Position
+    local moved = (hrp.Position - last).Magnitude
+
+    if moved < 0.5 then
+        if not SC.stuckTime then SC.stuckTime = 0 end
+        SC.stuckTime += 0.3
+    else
+        SC.stuckTime = 0
+        SC.lastPos = hrp.Position
+    end
+
+    -- 🧨 卡住恢复
+    if SC.stuckTime > 2.5 then
+        warn("⚠️ 检测到长时间静止，尝试恢复")
+
+        local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            task.wait(0.2)
+        end
+
+        SC.stuckTime = 0
+    end
+end
+function AntiStuck(hrp)
+    if not hrp then return end
+
+    if not S2.lastPos then
+        S2.lastPos = hrp.Position
+        return
+    end
+
+    local moved = (hrp.Position - S2.lastPos).Magnitude
+
+    if moved < 0.6 then
+        S2.stuckTime += 0.3
+    else
+        S2.stuckTime = 0
+        S2.lastPos = hrp.Position
+    end
+
+    -- 🧨 卡死修复
+    if S2.stuckTime > 2.5 then
+        warn("⚠️ 检测卡住 → 自动恢复")
+
+        local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
+
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            task.wait(0.15)
+
+            hum:MoveTo(hrp.Position + Vector3.new(math.random(-5,5),0,math.random(-5,5)))
+        end
+
+        S2.stuckTime = 0
+    end
+end
+local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+if hrp then
+    if not S.lastPos then
+        S.lastPos = hrp.Position
+    end
+
+    local moved = (hrp.Position - S.lastPos).Magnitude
+
+    if moved < 0.5 then
+        S.stuckTime += 0.3
+    else
+        S.stuckTime = 0
+        S.lastPos = hrp.Position
+    end
+
+    -- 🧨 卡住恢复
+    if S.stuckTime > 2.5 then
+        local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
+
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            task.wait(0.2)
+            hum:MoveTo(hrp.Position + Vector3.new(math.random(-5,5),0,math.random(-5,5)))
+        end
+
+        S.stuckTime = 0
+    end
+end
+
+-- 🧹 定期清理（防变慢）
+if tick() - S.lastClean > 30 then
+    SafeClean(Settings)
+    S.lastClean = tick()
+end
