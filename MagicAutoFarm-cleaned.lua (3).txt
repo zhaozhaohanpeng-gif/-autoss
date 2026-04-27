@@ -1,3 +1,36 @@
+-- 📌 【放最开头】
+-- =========================
+_G.Zenith = {
+lastMoveTime = tick(),
+lastPos = nil,
+idleTime = 0,
+recovering = false
+}
+
+local Z = _G.Zenith
+
+local function GetHRP()
+local char = game.Players.LocalPlayer.Character
+return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+-- Hook Humanoid:MoveTo（记录源码是否在动）
+local mt = getrawmetatable(game)
+local old = mt.__namecall
+setreadonly(mt,false)
+
+mt.__namecall = newcclosure(function(self,...)
+local method = getnamecallmethod()
+
+if method == "MoveTo" then  
+    Z.lastMoveTime = tick()  
+end  
+
+return old(self,...)
+
+end)
+
+setreadonly(mt,true)
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -1533,3 +1566,77 @@ end)
 Fluent:Notify({ Title = "AutoFarm", Content = "Загружено", Duration = 2 })
 
 task.spawn(MainFarmLoop)
+-- 📌 【放最底部】
+-- =========================
+task.spawn(function()
+while true do
+task.wait(0.5)
+
+local hrp = GetHRP()  
+    if not hrp then continue end  
+
+    -- 初始化  
+    if not Z.lastPos then  
+        Z.lastPos = hrp.Position  
+        continue  
+    end  
+
+    local dist = (hrp.Position - Z.lastPos).Magnitude  
+
+    if dist < 1 then  
+        Z.idleTime += 0.5  
+    else  
+        Z.idleTime = 0  
+        Z.lastPos = hrp.Position  
+    end  
+
+    -- =========================  
+    -- 🔥 核心：判定卡住  
+    -- =========================  
+    if Z.idleTime > 6 and (tick() - Z.lastMoveTime > 4) and not Z.recovering then  
+        Z.recovering = true  
+        warn("🚨 卡住 → Zenith接管：重新找目标")  
+
+        local hum = hrp.Parent:FindFirstChild("Humanoid")  
+        if hum then  
+            -- 1️⃣ 轻微脱困  
+            hum.Jump = true  
+            task.wait(0.2)  
+
+            hum:MoveTo(hrp.Position + Vector3.new(  
+                math.random(-10,10),0,math.random(-10,10)  
+            ))  
+            task.wait(1)  
+        end  
+
+        -- 2️⃣ 🔥 重新找目标（调用源码函数）  
+        local newTarget = nil  
+        pcall(function()  
+            if GetClosestTarget then  
+                newTarget = GetClosestTarget()  
+            end  
+        end)  
+
+        -- 3️⃣ 🔥 用源码路线继续  
+        if newTarget and MoveToTarget then  
+            warn("🎯 找到新目标，继续源码路线")  
+
+            pcall(function()  
+                MoveToTarget(newTarget)  
+            end)  
+        else  
+            warn("⚠️ 没找到目标，随机游走")  
+            if hum then  
+                hum:MoveTo(hrp.Position + Vector3.new(  
+                    math.random(-20,20),0,math.random(-20,20)  
+                ))  
+            end  
+        end  
+
+        Z.idleTime = 0  
+        Z.lastMoveTime = tick()  
+        Z.recovering = false  
+    end  
+end
+
+end)
