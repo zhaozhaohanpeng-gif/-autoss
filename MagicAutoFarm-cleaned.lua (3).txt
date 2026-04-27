@@ -1,3 +1,20 @@
+local ScreenGui = Instance.new("ScreenGui")
+local Button = Instance.new("TextButton")
+
+ScreenGui.Parent = game.CoreGui
+ScreenGui.Name = "ColaUI"
+
+Button.Parent = ScreenGui
+Button.Size = UDim2.new(0, 120, 0, 40)
+Button.Position = UDim2.new(0, 20, 0, 200)
+Button.Text = "可乐: OFF"
+
+_G.ColaEnabled = false
+
+Button.MouseButton1Click:Connect(function()
+    _G.ColaEnabled = not _G.ColaEnabled
+    Button.Text = _G.ColaEnabled and "可乐: ON" or "可乐: OFF"
+end)
 _G.Zenith = {
     lastActionTime = tick(),
     recovering = false,
@@ -1594,6 +1611,49 @@ task.spawn(function()
 
             Z.lastActionTime = tick()
             Z.recovering = false
+        end
+    end
+end)
+local function IsTargetValid(target)
+    if not target then return false end
+    if not target:FindFirstChild("HumanoidRootPart") then return false end
+
+    local hum = target:FindFirstChild("Humanoid")
+    if hum and hum.Health <= 0 then return false end
+
+    return true
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+
+        if not _G.ColaEnabled then continue end
+
+        local target = nil
+        pcall(function()
+            if GetClosestTarget then
+                target = GetClosestTarget()
+            end
+        end)
+
+        if not IsTargetValid(target) then
+            warn("🥤 可乐：目标失效 → 重新搜索")
+
+            task.wait(0.2)
+
+            local newTarget = nil
+            pcall(function()
+                newTarget = GetClosestTarget()
+            end)
+
+            if newTarget and MoveToTarget then
+                MoveToTarget(newTarget)
+            end
+        else
+            if MoveToTarget then
+                MoveToTarget(target)
+            end
         end
     end
 end)
